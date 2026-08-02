@@ -92,6 +92,15 @@ def _connect() -> sqlite3.Connection:
             added_at TEXT
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS fav_setups (
+            sig TEXT PRIMARY KEY,
+            label TEXT,
+            params TEXT,
+            status TEXT DEFAULT 'favourite',
+            added_at TEXT
+        )
+    """)
     for col in ("symbol", "sweep_tag", "profit_factor"):
         con.execute(f"CREATE INDEX IF NOT EXISTS idx_runs_{col} ON runs({col})")
     _migrate_legacy(con)
@@ -137,6 +146,51 @@ def autotrade_set(symbol: str, enabled: bool = True, cfg: dict | None = None,
              json.dumps(cfg, sort_keys=True) if cfg else None, size_usd,
              datetime.now(timezone.utc).isoformat(timespec="seconds"), size_usd),
         )
+        con.commit()
+    finally:
+        con.close()
+
+
+# --------------------------------------------------------- favourite setups
+
+def fav_setups_list() -> list[dict]:
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT sig, label, params, status, added_at FROM fav_setups "
+            "ORDER BY added_at").fetchall()
+    finally:
+        con.close()
+    return [{"sig": r[0], "label": r[1],
+             "params": json.loads(r[2]) if r[2] else None,
+             "status": r[3], "added_at": r[4]} for r in rows]
+
+
+def fav_setups_set(sig: str, label: str | None = None,
+                   params: dict | None = None,
+                   status: str | None = None) -> None:
+    con = _connect()
+    try:
+        con.execute(
+            "INSERT INTO fav_setups (sig, label, params, status, added_at) "
+            "VALUES (?, ?, ?, COALESCE(?, 'favourite'), ?) "
+            "ON CONFLICT(sig) DO UPDATE SET "
+            "label=COALESCE(excluded.label, fav_setups.label), "
+            "params=COALESCE(excluded.params, fav_setups.params), "
+            "status=COALESCE(?, fav_setups.status)",
+            (sig, label,
+             json.dumps(params, sort_keys=True) if params else None, status,
+             datetime.now(timezone.utc).isoformat(timespec="seconds"), status),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def fav_setups_delete(sig: str) -> None:
+    con = _connect()
+    try:
+        con.execute("DELETE FROM fav_setups WHERE sig = ?", (sig,))
         con.commit()
     finally:
         con.close()

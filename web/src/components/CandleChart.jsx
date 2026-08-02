@@ -7,6 +7,7 @@ import { createChart } from 'lightweight-charts'
 // scale. `rsi`: [{time, value}] drawn as an oscillator in the bottom band.
 export default function CandleChart({
   candles, markers, height = 420, range = null, lines = [], rsi = null,
+  priceLines = [],
 }) {
   const ref = useRef(null)
 
@@ -61,6 +62,12 @@ export default function CandleChart({
     if (markers?.length) {
       series.setMarkers([...markers].sort((a, b) => a.time - b.time))
     }
+    for (const pl of priceLines) {
+      series.createPriceLine({
+        price: pl.price, color: pl.color || '#e8b93c', lineWidth: 1,
+        lineStyle: 2, axisLabelVisible: true, title: pl.title || '',
+      })
+    }
     if (range) {
       try {
         chart.timeScale().setVisibleRange(range)
@@ -75,7 +82,7 @@ export default function CandleChart({
     })
     ro.observe(ref.current)
     return () => { ro.disconnect(); chart.remove() }
-  }, [candles, markers, height, range, lines, rsi])
+  }, [candles, markers, height, range, lines, rsi, priceLines])
 
   return <div ref={ref} style={{ width: '100%' }} />
 }

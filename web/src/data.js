@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 
-// favourite strategies, shared by every page (persisted in localStorage)
+// favourite strategies, shared by every page. Server-backed (fav_setups
+// table — the Setup League reads them there); localStorage is the offline
+// fallback and gets migrated up on first load.
 export function useFavStrategies() {
   const [favs, setFavs] = useState(() => {
     try {
@@ -9,14 +11,62 @@ export function useFavStrategies() {
       return []
     }
   })
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const r = await fetch('/api/favsetups')
+        if (!r.ok) return
+        const server = await r.json()
+        if (server.length) {
+          setFavs(server.map((f) => ({
+            sig: f.sig, label: f.label, status: f.status,
+          })))
+        } else {
+          // one-time migration of purely-local favourites
+          let local = []
+          try {
+            local = JSON.parse(
+              localStorage.getItem('specula-fav-strategies') || '[]')
+          } catch { /* none */ }
+          for (const f of local) {
+            fetch('/api/favsetups', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sig: f.sig, label: f.label }),
+            }).catch(() => {})
+          }
+        }
+      } catch { /* offline — localStorage copy stands */ }
+    })()
+  }, [])
+
   useEffect(() => {
     localStorage.setItem('specula-fav-strategies', JSON.stringify(favs))
   }, [favs])
-  const toggleFav = (sig, label) => setFavs((prev) =>
-    prev.some((f) => f.sig === sig)
+
+  const toggleFav = (sig, label, params) => {
+    const removing = favs.some((f) => f.sig === sig)
+    setFavs((prev) => removing
       ? prev.filter((f) => f.sig !== sig)
       : [...prev, { sig, label }])
+    fetch('/api/favsetups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(removing
+        ? { sig, remove: true }
+        : { sig, label, params }),
+    }).catch(() => {})
+  }
   return [favs, toggleFav]
+}
+
+// a run's params without asset/fee — what defines the strategy itself
+export function strategyParams(run) {
+  const p = { ...run.params }
+  delete p.fee
+  delete p.symbol
+  return p
 }
 
 export async function loadRuns() {

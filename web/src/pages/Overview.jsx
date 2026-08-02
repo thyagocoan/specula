@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import CandleChart from '../components/CandleChart.jsx'
 import { Pf, Ret, Th, sortRows } from '../components/bits.jsx'
-import { groupSetups, isCrypto, num, strategySig, useFavStrategies } from '../data.js'
+import { groupSetups, isCrypto, num, strategyParams, strategySig, useFavStrategies } from '../data.js'
 
 const TABS = [
   ['all', 'All'],
@@ -190,7 +190,10 @@ function SetupCurve({ runId, days, symbol, onClose }) {
       const ret = t.net_return_pct ?? t.return_pct
       const focused = focus != null && t.entry_ts === focus.entry_ts &&
         t.exit_ts === focus.exit_ts
-      const eSec = Math.floor(Date.parse(t.entry_ts) / 1000)
+      // close-fill entries (ma_cross/vwap/rsi) execute at the bar's END —
+      // place the arrow at the fill moment, not the bar label
+      const fillShift = t.entry_fill === 'close' ? (t.bar_sec || 0) : 0
+      const eSec = Math.floor(Date.parse(t.entry_ts) / 1000) + fillShift
       m.push({
         time: eSec + tzOffset(tz, eSec),
         position: long ? 'belowBar' : 'aboveBar',
@@ -222,6 +225,17 @@ function SetupCurve({ runId, days, symbol, onClose }) {
     const x = focus.exit_ts ? Math.floor(Date.parse(focus.exit_ts) / 1000) : e
     return { from: e + tzOffset(tz, e) - pad, to: x + tzOffset(tz, x) + pad }
   }, [focus, tf, tz])
+
+  // entry/exit price guides for the selected trade — the truth of where the
+  // fills sit relative to the candles, whatever the bar labelling
+  const priceLines = useMemo(() => {
+    if (!focus) return []
+    const out = [{ price: focus.entry_price, title: `entry ${focus.entry_price}` }]
+    if (focus.exit_price != null) {
+      out.push({ price: focus.exit_price, title: `exit ${focus.exit_price}` })
+    }
+    return out
+  }, [focus])
 
   // compound the stake trade by trade: each trade reinvests the running
   // balance, so the next trade uses the result of the previous P&L
@@ -291,13 +305,14 @@ function SetupCurve({ runId, days, symbol, onClose }) {
             ))}
           </div>
           <p className="hint" style={{ margin: '0 0 6px' }}>
-            ▲ L = long entry (signal fired) · ▼ S = short entry ·
-            ● = exit, labelled with the trade's net P&L % · gold ■ = the trade
-            selected below — click a trigger row to zoom to it, click again to
-            zoom out · RSI draws as the band at the bottom (dotted lines 30/70)
+            ▲ L = long entry at its fill moment (MA/VWAP/RSI setups fill at
+            the signal bar's close; breakout setups fill intra-bar) ·
+            ▼ S = short entry · ● = exit, labelled with net P&L % · gold ■ =
+            the trade selected below — clicking a row zooms in and draws gold
+            entry/exit price guides · RSI = bottom band (dotted 30/70)
           </p>
           <CandleChart candles={displayCandles} markers={markers} range={range}
-            lines={indLines.lines} rsi={indLines.rsi} />
+            lines={indLines.lines} rsi={indLines.rsi} priceLines={priceLines} />
           <h3 style={{ marginTop: 14 }}>Trigger log{' '}
             <span className="hint">(cross-check in TradingView — market time is
               {crypto ? ' UTC' : ' New York'} · P&L is net of{' '}
@@ -318,12 +333,14 @@ function SetupCurve({ runId, days, symbol, onClose }) {
               {(ledger?.rows || []).slice().reverse().slice(0, 100).map((t, i) => {
                 const focused = focus != null && t.entry_ts === focus.entry_ts &&
                   t.exit_ts === focus.exit_ts
+                const fillIso = new Date(Date.parse(t.entry_ts) +
+                  (t.entry_fill === 'close' ? (t.bar_sec || 0) * 1000 : 0)).toISOString()
                 return (
                   <tr key={i} className="selectable"
                     style={focused ? { background: 'rgba(232,185,60,.14)' } : undefined}
                     onClick={() => setFocus(focused ? null : t)}>
-                    <td className="txt">{fmtTime(t.entry_ts, 'Australia/Melbourne')}</td>
-                    <td className="txt">{fmtTime(t.entry_ts, marketTz)}</td>
+                    <td className="txt">{fmtTime(fillIso, 'Australia/Melbourne')}</td>
+                    <td className="txt">{fmtTime(fillIso, marketTz)}</td>
                     <td className="txt">{t.side}</td>
                     <td>{t.entry_price}</td>
                     <td className="txt">{t.exit_ts ? fmtTime(t.exit_ts, marketTz) : 'open'}</td>
@@ -585,7 +602,10 @@ function AssetReview({ symbol, runs, wf, days, favs, toggleFav }) {
                     <span title={isFav
                       ? 'remove from favourites'
                       : 'favourite — compare this strategy across every asset'}
-                      onClick={(e) => { e.stopPropagation(); toggleFav(sig, s.label) }}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        toggleFav(sig, s.label, strategyParams(s.runs[0]))
+                      }}
                       style={{
                         cursor: 'pointer', marginRight: 6,
                         color: isFav ? '#e8b93c' : 'var(--muted)',

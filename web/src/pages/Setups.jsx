@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Pf, Ret, Th, sortRows } from '../components/bits.jsx'
-import { groupSetups, num, strategySig, uniqueSorted, useFavStrategies } from '../data.js'
+import { groupSetups, num, strategyParams, strategySig, uniqueSorted, useFavStrategies } from '../data.js'
 
 const PERIODS = [
   ['all', 'All time', null],
@@ -163,6 +163,7 @@ export default function Setups({ runs }) {
               : ` · ${periodLabel.toLowerCase()} activity loaded for the top ${PERIOD_ROWS} rows`)}
           </span>
         </div>
+        <div style={{ overflowX: 'auto' }}>
         <table className="grid">
           <thead>
             <tr>
@@ -198,7 +199,7 @@ export default function Setups({ runs }) {
                   <span title={isFav
                     ? 'remove from favourites'
                     : 'favourite — pins this strategy on every asset review'}
-                    onClick={() => toggleFav(sig, s.label)}
+                    onClick={() => toggleFav(sig, s.label, strategyParams(s.runs[0]))}
                     style={{
                       cursor: 'pointer', marginRight: 6,
                       color: isFav ? '#e8b93c' : 'var(--muted)',
@@ -235,6 +236,7 @@ export default function Setups({ runs }) {
             })}
           </tbody>
         </table>
+        </div>
         {sorted.length > 200 && <p className="hint">showing first 200 — tighten the filters</p>}
       </div>
     </div>

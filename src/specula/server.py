@@ -70,6 +70,10 @@ JOB_TYPES = {
         "label": "Overnight strategy lab (discovery + OOS)",
         "cmd": [sys.executable, "scripts/overnight_lab.py"],
     },
+    "setup_league": {
+        "label": "Setup League (favourites + auto candidates on ALL assets)",
+        "cmd": [sys.executable, "scripts/setup_league.py"],
+    },
 }
 
 JOBS: dict[str, dict] = {}
@@ -266,11 +270,20 @@ def _run_trades(run_id: str) -> list[dict]:
     from specula.backtest import build_portfolio
     from specula.settings import get_settings
 
+    import pandas as pd
+
     cfg = runlog.get_cfg(run_id)
     pf = build_portfolio(cfg)
     idx = pf.wrapper.index
     sym = cfg.get("symbol", "")
     s = get_settings()
+    # fill semantics: signal-bar-close fills vs intra-bar stop/target fills.
+    # Bars are stamped with their START time, so a close-fill really happens
+    # one bar-length later — the UI uses this to place markers honestly.
+    bar_sec = int(pd.Timedelta(cfg.get("exec_tf", "1min")).total_seconds())
+    entry_fill = ("close" if cfg.get("strategy") == "lab"
+                  and cfg.get("entry", {}).get("kind") in
+                  ("ma_cross", "vwap", "rsi_cross") else "intrabar")
     crypto = sym.endswith(("USDT", "USDC"))
     size = (s["trade_size_crypto_usd"] if crypto
             else s["trade_size_stock_usd"]) or 1000
@@ -295,6 +308,8 @@ def _run_trades(run_id: str) -> list[dict]:
             "size_usd": size,
             "pnl_usd": round(size * net / 100, 2) if closed else None,
             "status": "closed" if closed else "open",
+            "bar_sec": bar_sec,
+            "entry_fill": entry_fill,
         })
     if len(_trades_cache) > 400:
         _trades_cache.pop(next(iter(_trades_cache)))
@@ -378,6 +393,42 @@ def get_journal(limit_symbols: int = 20):
            "setups": sorted(setups, key=lambda s: s["symbol"]),
            "trades": trades}
     _journal_cache.update(key=key, doc=doc)
+    return doc
+
+
+class FavSetupUpdate(BaseModel):
+    sig: str
+    label: str | None = None
+    params: dict | None = None
+    status: str | None = None
+    remove: bool = False
+
+
+@app.get("/api/favsetups")
+def get_favsetups():
+    """Server-side favourite setups (shared across devices; feeds the League)."""
+    return runlog.fav_setups_list()
+
+
+@app.post("/api/favsetups")
+def post_favsetups(u: FavSetupUpdate):
+    if u.remove:
+        runlog.fav_setups_delete(u.sig)
+    else:
+        runlog.fav_setups_set(u.sig, u.label, u.params, u.status)
+    return {"ok": True, "favs": runlog.fav_setups_list()}
+
+
+LEAGUE_JSON = Path("data/meta/setup_league.json")
+
+
+@app.get("/api/league")
+def get_league():
+    """Latest Setup League scorecard (run the setup_league job to refresh)."""
+    if not LEAGUE_JSON.exists():
+        return {"available": False}
+    doc = json.loads(LEAGUE_JSON.read_text(encoding="utf-8"))
+    doc["available"] = True
     return doc
 
 
