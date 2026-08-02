@@ -8,7 +8,66 @@ const Money = ({ v }) => v == null ? '—' : (
   </span>
 )
 
-// live progress for a running league job (parses its "step assets N/M" log)
+// run-until-paused control for the League Explorer
+function ExplorerCard() {
+  const [st, setSt] = useState(null)
+  const [note, setNote] = useState(null)
+
+  async function refresh() {
+    try {
+      const r = await fetch('/api/explorer')
+      if (r.ok) setSt(await r.json())
+    } catch { /* offline */ }
+  }
+  useEffect(() => {
+    refresh()
+    const t = setInterval(refresh, 5000)
+    return () => clearInterval(t)
+  }, [])
+
+  async function act(action) {
+    setNote(null)
+    const r = await fetch('/api/explorer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    })
+    const d = await r.json().catch(() => ({}))
+    setNote(d?.note || (r.ok ? null : 'request failed'))
+    refresh()
+  }
+
+  const running = st?.state === 'run'
+  return (
+    <div className="card">
+      <h3>
+        Explorer — new combinations until you pause{' '}
+        {running
+          ? <span className="badge running">exploring</span>
+          : <span className="badge failed">paused</span>}
+      </h3>
+      <p className="hint" style={{ marginTop: 4 }}>
+        Each round tests ~200 never-repeated setups (mutations of the current
+        leaderboard + random draws across every family, trailing stops
+        included) on every asset, then drops results into "To review".
+        Rounds completed: <b>{st?.round ?? 0}</b>. It yields around the
+        nightly update / weekly lab and resumes by itself; pausing takes
+        effect when the current round finishes. Trust the{' '}
+        <b>Post-disc. PF</b> column for anything the explorer found — it only
+        counts data newer than the setup's first test, the one number endless
+        searching can't fake.
+      </p>
+      {running
+        ? <button className="btn" onClick={() => act('pause')}>
+            Pause after this round</button>
+        : <button className="btn" onClick={() => act('start')}>
+            Explore until paused ▶</button>}
+      {note && <p className="hint" style={{ marginBottom: 0 }}>{note}</p>}
+    </div>
+  )
+}
+
+// live progress for a running league/explorer job (parses "step assets N/M")
 function LeagueProgress({ onDone }) {
   const [state, setState] = useState(null)
 
@@ -20,7 +79,8 @@ function LeagueProgress({ onDone }) {
         const r = await fetch('/api/jobs')
         if (!r.ok) return
         const lg = (await r.json()).find(
-          (j) => j.type === 'setup_league' && j.status === 'running')
+          (j) => ['setup_league', 'league_explorer'].includes(j.type)
+            && j.status === 'running')
         if (!lg) {
           if (alive) setState(null)
           if (wasRunning) { wasRunning = false; onDone?.() }
@@ -34,17 +94,23 @@ function LeagueProgress({ onDone }) {
         const re = /\[league\] step assets (\d+)\/(\d+)/g
         while ((m = re.exec(log))) last = m
         const hdr = log.match(/\[league\] (\d+) configs x (\d+) assets/)
+        let rm, round = null
+        const rre = /\[round (\d+)\]/g
+        while ((rm = rre.exec(log))) round = rm[1]
         const elapsed = (Date.now() - Date.parse(lg.started_at)) / 60000
         const frac = last
           ? Math.min(0.99, Number(last[1]) / Number(last[2]))
           : 0.02
         setState({
           frac,
+          label: lg.type === 'league_explorer'
+            ? `Explorer${round ? ` — round ${round}` : ''}`
+            : 'Setup League',
           text: `${last ? `assets ${last[1]}/${last[2]}` : 'warming up'}`
             + (hdr ? ` · ${hdr[1]} configs × ${hdr[2]} assets` : '')
             + ` · elapsed ${elapsed.toFixed(1)} min`
             + (frac > 0.03
-              ? ` · ~${Math.max(0, (elapsed / frac) * (1 - frac)).toFixed(1)} min left`
+              ? ` · ~${Math.max(0, (elapsed / frac) * (1 - frac)).toFixed(1)} min left this round`
               : ''),
         })
       } catch { /* keep last */ }
@@ -57,7 +123,7 @@ function LeagueProgress({ onDone }) {
   if (!state) return null
   return (
     <div className="card">
-      <h3><span className="badge running">running</span> Setup League</h3>
+      <h3><span className="badge running">running</span> {state.label}</h3>
       <div className="pbar-track">
         <div className="pbar-fill" style={{ width: `${Math.round(state.frac * 100)}%` }} />
       </div>
@@ -89,11 +155,13 @@ function ScoreTable({ title, hint, rows, sort, setSort, isApproved, onAction, em
                 <Th id="hold_trades" sort={sort} setSort={setSort}>Holdout trades</Th>
                 <Th id="hold_pnl_usd" sort={sort} setSort={setSort}>Holdout P&L $</Th>
                 <Th id="hold_assets_pf_gt1" sort={sort} setSort={setSort}>Assets PF&gt;1</Th>
+                <Th id="post_pf" sort={sort} setSort={setSort}>Post-disc. PF</Th>
+                <Th id="first_seen" sort={sort} setSort={setSort} txt>First seen</Th>
                 <th>Action</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {rows.slice(0, 150).map((r) => (
                 <tr key={r.sig}
                   style={!r.eligible && !isApproved ? { opacity: 0.5 } : undefined}>
                   <td>{r.rank ?? '—'}</td>
@@ -106,6 +174,9 @@ function ScoreTable({ title, hint, rows, sort, setSort, isApproved, onAction, em
                   <td>{r.hold_trades}</td>
                   <td><Money v={r.hold_pnl_usd} /></td>
                   <td>{r.hold_assets_pf_gt1}/{r.hold_assets}</td>
+                  <td title={r.post_trades ? `${r.post_trades} trades since discovery` : 'no data newer than discovery yet'}>
+                    <Pf v={r.post_pf} /></td>
+                  <td className="txt hint">{r.first_seen?.slice(0, 10) ?? '—'}</td>
                   <td>
                     {isApproved
                       ? <button className="btn ghost" onClick={() => onAction(r)}>
@@ -119,6 +190,10 @@ function ScoreTable({ title, hint, rows, sort, setSort, isApproved, onAction, em
               ))}
             </tbody>
           </table>
+          {rows.length > 150 && (
+            <p className="hint">showing 150 of {rows.length} — sort to surface
+              what you need</p>
+          )}
         </div>
       )}
     </div>
@@ -192,8 +267,13 @@ export default function League() {
     return sortRows(flat, sort.col, sort.dir)
   }, [doc, sort, cls])
 
+  const [showArchived, setShowArchived] = useState(false)
   const approvedRows = rows.filter((r) => approvedSigs.has(r.sig))
-  const reviewRows = rows.filter((r) => !approvedSigs.has(r.sig))
+  const allReview = rows.filter((r) => !approvedSigs.has(r.sig))
+  // clear failures rest in the archive so review stays readable
+  const isArchived = (r) => r.hold_pf != null && r.hold_pf < 0.9
+  const reviewRows = showArchived ? allReview : allReview.filter((r) => !isArchived(r))
+  const archivedCount = allReview.filter(isArchived).length
   const approvedMissing = favs.filter(
     (f) => f.status === 'approved' && !rows.some((r) => r.sig === f.sig))
 
@@ -220,6 +300,7 @@ export default function League() {
         <button className="btn" onClick={launch}>Run the league now</button>
       </div>
 
+      <ExplorerCard />
       <LeagueProgress onDone={load} />
 
       {err && <div className="card"><span className="neg">{err}</span></div>}
@@ -255,11 +336,20 @@ export default function League() {
           )}
 
           <ScoreTable
-            title="To review"
-            hint={`generated ${doc.generated_at} · holdout = trades after ${doc.cutoff?.slice(0, 10)} · eligible = enough holdout trades/assets · rank = holdout pooled PF`}
+            title={`To review (${reviewRows.length})`}
+            hint={`generated ${doc.generated_at} · holdout = trades after ${doc.cutoff?.slice(0, 10)} · eligible = enough holdout trades/assets · rank = holdout pooled PF · Post-disc. PF counts only data newer than the setup's first test`}
             rows={reviewRows} sort={sort} setSort={setSort}
             isApproved={false} onAction={(r) => setStatus(r, 'approved')}
             emptyText="nothing to review — run the league" />
+
+          {archivedCount > 0 && (
+            <p className="hint">
+              <button className="btn ghost" onClick={() => setShowArchived(!showArchived)}>
+                {showArchived ? 'hide' : 'show'} {archivedCount} archived
+                (holdout PF &lt; 0.9)
+              </button>
+            </p>
+          )}
 
           <p className="hint">
             trades/P&amp;L use ${num(doc.settings?.trade_size_stock_usd, 0)}

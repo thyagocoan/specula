@@ -74,6 +74,10 @@ JOB_TYPES = {
         "label": "Setup League (favourites + auto candidates on ALL assets)",
         "cmd": [sys.executable, "scripts/setup_league.py"],
     },
+    "league_explorer": {
+        "label": "League Explorer (new setup combinations until paused)",
+        "cmd": [sys.executable, "scripts/league_explorer.py"],
+    },
 }
 
 JOBS: dict[str, dict] = {}
@@ -420,6 +424,7 @@ def post_favsetups(u: FavSetupUpdate):
 
 
 LEAGUE_JSON = Path("data/meta/setup_league.json")
+EXPLORER_STATE = Path("data/meta/explorer_state.json")
 
 
 @app.get("/api/league")
@@ -430,6 +435,48 @@ def get_league():
     doc = json.loads(LEAGUE_JSON.read_text(encoding="utf-8"))
     doc["available"] = True
     return doc
+
+
+def _explorer_state() -> dict:
+    try:
+        return json.loads(EXPLORER_STATE.read_text(encoding="utf-8"))
+    except Exception:
+        return {"state": "pause", "round": 0}
+
+
+class ExplorerAction(BaseModel):
+    action: str  # "start" | "pause"
+
+
+@app.get("/api/explorer")
+def get_explorer():
+    st = _explorer_state()
+    st["job_running"] = any(
+        j["status"] == "running" and j["type"] == "league_explorer"
+        for j in JOBS.values())
+    return st
+
+
+@app.post("/api/explorer")
+def post_explorer(a: ExplorerAction):
+    st = _explorer_state()
+    if a.action == "pause":
+        st["state"] = "pause"
+        EXPLORER_STATE.parent.mkdir(parents=True, exist_ok=True)
+        EXPLORER_STATE.write_text(json.dumps(st), encoding="utf-8")
+        return {"ok": True, "state": "pause",
+                "note": "the explorer stops after its current round"}
+    if a.action != "start":
+        raise HTTPException(400, "action must be start or pause")
+    st["state"] = "run"
+    EXPLORER_STATE.parent.mkdir(parents=True, exist_ok=True)
+    EXPLORER_STATE.write_text(json.dumps(st), encoding="utf-8")
+    note = "explorer running"
+    try:
+        start_job("league_explorer")
+    except HTTPException as e:
+        note = f"state set to run; launch deferred ({e.detail})"
+    return {"ok": True, "state": "run", "note": note}
 
 
 @app.get("/api/walkforward")
@@ -535,6 +582,14 @@ def _scheduled(job_type: str) -> None:
         print(f"[scheduler] {job_type} failed to launch: {e}", flush=True)
 
 
+def _explorer_keeper() -> None:
+    """Relaunch the explorer if the user left it in 'run' and no job holds
+    the slot (it yields around scheduled jobs and container restarts)."""
+    if _explorer_state().get("state") != "run":
+        return
+    _scheduled("league_explorer")
+
+
 if os.environ.get("SPECULA_SCHEDULER") == "1":
     from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -543,9 +598,11 @@ if os.environ.get("SPECULA_SCHEDULER") == "1":
                    hour=22, minute=15, id="nightly")
     _sched.add_job(lambda: _scheduled("overnight_lab"), "cron",
                    day_of_week="sat", hour=1, minute=0, id="weekly_lab")
+    _sched.add_job(_explorer_keeper, "interval", minutes=15,
+                   id="explorer_keeper")
     _sched.start()
-    print("[scheduler] active: nightly 22:15, weekly lab Sat 01:00 "
-          "(Australia/Melbourne)", flush=True)
+    print("[scheduler] active: nightly 22:15, weekly lab Sat 01:00, "
+          "explorer keeper 15min (Australia/Melbourne)", flush=True)
 
 
 Path("reports").mkdir(exist_ok=True)

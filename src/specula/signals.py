@@ -149,6 +149,67 @@ def vwap(exec_df: pd.DataFrame, symbol: str, mode: str, band_k: float = 1.5,
     return long_e, short_e, None
 
 
+# ------------------------------------------------------- explorer families
+
+def donchian(setup_df: pd.DataFrame, exec_index: pd.DatetimeIndex,
+             setup_tf: str, window: int):
+    """Donchian channel breakout: close crosses the prior N-bar extreme."""
+    close, high, low = setup_df["close"], setup_df["high"], setup_df["low"]
+    hh = high.rolling(window).max().shift(1)
+    ll = low.rolling(window).min().shift(1)
+    above = close > hh
+    below = close < ll
+    up = (above & ~above.shift(1).fillna(False)).fillna(False)
+    dn = (below & ~below.shift(1).fillna(False)).fillna(False)
+    long_e = _events_to_exec(close.index[up], setup_tf, exec_index)
+    short_e = _events_to_exec(close.index[dn], setup_tf, exec_index)
+    return long_e, short_e, None
+
+
+def boll(setup_df: pd.DataFrame, exec_index: pd.DatetimeIndex,
+         setup_tf: str, window: int, dev: float, mode: str):
+    """Bollinger band events. trend: break out of a band; revert: come back
+    inside after a band excursion (fade)."""
+    close = setup_df["close"]
+    mid = close.rolling(window).mean()
+    sd = close.rolling(window).std()
+    upper, lower = mid + dev * sd, mid - dev * sd
+    above, below = close > upper, close < lower
+    if mode == "trend":
+        up = (above & ~above.shift(1).fillna(False)).fillna(False)
+        dn = (below & ~below.shift(1).fillna(False)).fillna(False)
+    else:  # revert
+        up = (~below & below.shift(1).fillna(False)).fillna(False)
+        dn = (~above & above.shift(1).fillna(False)).fillna(False)
+    long_e = _events_to_exec(close.index[up], setup_tf, exec_index)
+    short_e = _events_to_exec(close.index[dn], setup_tf, exec_index)
+    return long_e, short_e, None
+
+
+def macd(setup_df: pd.DataFrame, exec_index: pd.DatetimeIndex,
+         setup_tf: str, fast: int, slow: int, signal: int):
+    close = setup_df["close"]
+    line = (close.ewm(span=fast, adjust=False).mean()
+            - close.ewm(span=slow, adjust=False).mean())
+    sig_line = line.ewm(span=signal, adjust=False).mean()
+    up = ((line > sig_line) & (line.shift(1) <= sig_line.shift(1))).fillna(False)
+    dn = ((line < sig_line) & (line.shift(1) >= sig_line.shift(1))).fillna(False)
+    long_e = _events_to_exec(close.index[up], setup_tf, exec_index)
+    short_e = _events_to_exec(close.index[dn], setup_tf, exec_index)
+    return long_e, short_e, None
+
+
+def mom(setup_df: pd.DataFrame, exec_index: pd.DatetimeIndex,
+        setup_tf: str, window: int, thr: float):
+    """Momentum burst: N-bar rate of change crossing ±thr."""
+    roc = setup_df["close"].pct_change(window)
+    up = ((roc > thr) & (roc.shift(1) <= thr)).fillna(False)
+    dn = ((roc < -thr) & (roc.shift(1) >= -thr)).fillna(False)
+    long_e = _events_to_exec(roc.index[up], setup_tf, exec_index)
+    short_e = _events_to_exec(roc.index[dn], setup_tf, exec_index)
+    return long_e, short_e, None
+
+
 # ----------------------------------------------------------------- rsi_cross
 
 def rsi_cross(setup_df: pd.DataFrame, exec_index: pd.DatetimeIndex,
@@ -201,6 +262,19 @@ def generate(entry: dict, symbol: str, setup_tf: str, exec_tf: str):
         return rsi_cross(setup_df, exec_df.index, setup_tf,
                          entry.get("window", 14), entry.get("lo", 30),
                          entry.get("hi", 70))
+    if kind == "donchian":
+        return donchian(setup_df, exec_df.index, setup_tf, entry["window"])
+    if kind == "boll":
+        return boll(setup_df, exec_df.index, setup_tf,
+                    entry.get("window", 20), entry.get("dev", 2.0),
+                    entry.get("mode", "trend"))
+    if kind == "macd":
+        return macd(setup_df, exec_df.index, setup_tf,
+                    entry.get("fast", 12), entry.get("slow", 26),
+                    entry.get("signal", 9))
+    if kind == "mom":
+        return mom(setup_df, exec_df.index, setup_tf,
+                   entry.get("window", 10), entry.get("thr", 0.01))
     if kind == "didi":
         return didi(setup_df, exec_df, setup_tf,
                     entry.get("tol_bars", 1), entry.get("adx_filter", False))

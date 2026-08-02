@@ -46,7 +46,7 @@ function ProgressCard({ job }) {
   const totalEst = LAB_STEPS.reduce((s, [, e]) => s + e, 0)
   const elapsedMin = (Date.now() - Date.parse(job.started_at)) / 60000
   const isLab = job.type === 'overnight_lab'
-  const isLeague = job.type === 'setup_league'
+  const isLeague = ['setup_league', 'league_explorer'].includes(job.type)
   let frac = null
   let info = null
   if (isLab) {
@@ -109,7 +109,8 @@ export default function Execute({ apiUp }) {
     { id: 'export_web', label: 'Re-export web data', desc: 'Refresh runs.json and sync report HTMLs into the app.' },
     { id: 'daily_update', label: 'Daily data update', desc: 'Pull latest bars for every symbol in the lake, rebuild, re-run walk-forward, refresh portal. Also runs nightly via Task Scheduler.' },
     { id: 'overnight_lab', label: 'Overnight strategy lab', desc: 'Full discovery pipeline: MA megasweep → ORB/VWAP/RSI coarse → scoring → 1m refine → walk-forward on candidates (~6h).' },
-    { id: 'setup_league', label: 'Setup League', desc: 'Backtest every candidate setup (★ favourites + auto picks) on ALL assets and rank them on a 60-day holdout — feeds the League page (~15–40 min).' },
+    { id: 'setup_league', label: 'Setup League', desc: 'Backtest every candidate setup (★ favourites + auto picks) on ALL assets and rank them on a 60-day holdout — feeds the League page.' },
+    { id: 'league_explorer', label: 'League Explorer', desc: 'Endless discovery: each round tests ~200 never-tried setup combinations on every asset until paused. Control it from the League page.' },
   ])
   const [selected, setSelected] = useState(null)
   const [error, setError] = useState(null)
