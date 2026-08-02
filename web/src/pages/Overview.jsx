@@ -3,45 +3,10 @@ import Scatter from '../components/Scatter.jsx'
 import { Pf, Ret } from '../components/bits.jsx'
 import { groupSetups, isCrypto, num, setupLabel } from '../data.js'
 
-// The research funnel: each stage narrows the candidate set before the next
-// spends compute or statistical credibility on it.
-const FLOW = [
-  {
-    n: 1,
-    title: 'Data lake',
-    tags: [],
-    desc: '1-minute bars (Binance public dumps, Alpaca SIP), checksum-verified, raw → bronze → silver Parquet. Every other timeframe is resampled locally — never re-fetched. Equity bars are session-aligned (09:30 ET anchor).',
-  },
-  {
-    n: 2,
-    title: 'Broad discovery sweep',
-    tags: ['single-tf-v1', 'mtf-v1', 'mtf-equities-v1'],
-    desc: 'Both strategies × 19 setup→exec timeframe pairs × core variants × cost scenarios. Stops stay deliberately narrow here (structural for FFFD, a small grid for Didi): every extra grid dimension multiplies the chance the best cell is a fluke. Purpose: find where there is life at all, per asset. Lesson so far: single-timeframe versions mostly lose; higher-TF setup with lower-TF stop-break execution is what works.',
-  },
-  {
-    n: 3,
-    title: 'Exit refinement on survivors',
-    tags: ['trail-fffd-v1'],
-    desc: 'Only for setups that showed life: trailing stops, R-multiple targets, MFE (maximum favorable excursion) analysis to size trail distances from data instead of guessing. Lesson so far: fixed 1R target is best risk-adjusted; a 1–1.5% trail maximizes absolute return; trails ≤0.5% destroy the setup.',
-  },
-  {
-    n: 4,
-    title: 'Condition filters',
-    tags: ['rsi-filter-v1'],
-    desc: 'Multi-timeframe RSI (daily → 15m) snapshotted at each entry, look-ahead safe. Accept a filter only if the effect is monotone across buckets and economically sensible (e.g. don’t fade a move that is still extreme on the daily) — never a cherry-picked magic bucket.',
-  },
-  {
-    n: 5,
-    title: 'Walk-forward validation',
-    tags: [],
-    desc: 'Rolling 120d train / 30d test; the winner is picked on training data only and judged on unseen data. This is the only number to trust — in-sample results are always inflated. Verdict so far: the FFFD family survives at futures fees (OOS PF 1.42), dies at spot fees. See the Walk-forward page.',
-  },
-  {
-    n: 6,
-    title: 'Ready for paper trading',
-    tags: [],
-    desc: 'Only walk-forward survivors qualify, and only under the economics they survived at (futures/maker-level costs). Nothing here yet has earned real capital — the funnel exists to make sure whatever does, earned it honestly.',
-  },
+const TABS = [
+  ['all', 'All'],
+  ['crypto', 'Crypto'],
+  ['stocks', 'Stocks'],
 ]
 
 function ProcessingStatus({ onOpenExecute }) {
@@ -100,27 +65,109 @@ function ProcessingStatus({ onOpenExecute }) {
   )
 }
 
-const TABS = [
-  ['all', 'All'],
-  ['crypto', 'Crypto'],
-  ['stocks', 'Stocks'],
-]
+function BestStrategy({ symbol, symbolRuns, wf }) {
+  const setups = useMemo(() => {
+    const grouped = groupSetups(symbolRuns).filter((s) => s.pf_low != null)
+    const solid = grouped.filter((s) => s.n_trades >= 30)
+    return (solid.length ? solid : grouped.filter((s) => s.n_trades >= 10))
+      .sort((a, b) => b.pf_low - a.pf_low)
+  }, [symbolRuns])
+
+  const best = setups[0]
+  const wfDoc = wf?.symbols?.find((s) => s.symbol === symbol)
+
+  if (!best) {
+    return (
+      <div className="card">
+        <h3>Best strategy — {symbol}</h3>
+        <p className="hint">no setups with enough trades logged yet</p>
+      </div>
+    )
+  }
+  return (
+    <div className="card">
+      <h3>Best strategy — {symbol} <span className="hint">(in-sample, by PF at lowest fee)</span></h3>
+      <p style={{ fontSize: 15, fontWeight: 600, margin: '4px 0 12px' }}>{best.label}</p>
+      <div className="tiles">
+        <div className="tile"><div className="k">Profit factor (low / high fee)</div>
+          <div className="v"><Pf v={best.pf_low} /> <span className="hint">/</span> <Pf v={best.pf_high} /></div></div>
+        <div className="tile"><div className="k">Win rate</div><div className="v">{num(best.win_rate, 1)}%</div>
+          <div className="d">{best.n_trades} trades</div></div>
+        <div className="tile"><div className="k">Return</div><div className="v"><Ret v={best.total_return} /></div>
+          <div className="d">max DD {num(best.max_dd, 1)}%</div></div>
+        <div className="tile"><div className="k">Sharpe</div><div className="v">{num(best.sharpe)}</div></div>
+        {best.report_run && (
+          <div className="tile"><div className="k">Chart report</div>
+            <div className="d" style={{ marginTop: 8 }}>
+              <a href={`/reports/${best.report_run.run_id}.html`} target="_blank" rel="noreferrer">open interactive report</a>
+            </div></div>
+        )}
+      </div>
+      {wfDoc ? (
+        <>
+          <h3 style={{ marginTop: 6 }}>Out-of-sample verdict (walk-forward)</h3>
+          <table className="grid">
+            <thead>
+              <tr><th>Fee/side</th><th>OOS trades</th><th>OOS PF</th><th>OOS win rate</th><th>OOS return</th></tr>
+            </thead>
+            <tbody>
+              {wfDoc.scenarios.map((s) => (
+                <tr key={s.fee}>
+                  <td>{(s.fee * 100).toFixed(2)}%</td>
+                  <td>{s.aggregate.oos_trades}</td>
+                  <td><Pf v={s.aggregate.oos_pf} /></td>
+                  <td>{num(s.aggregate.oos_win_rate_pct, 1)}%</td>
+                  <td><Ret v={s.aggregate.oos_return_pct} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="hint">walk-forward picks its own winner per fold — the OOS row judges the symbol, not this exact setup</p>
+        </>
+      ) : (
+        <p className="hint">no walk-forward result for this symbol yet — run it from the Execute page</p>
+      )}
+    </div>
+  )
+}
 
 export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) {
   const [minTrades, setMinTrades] = useState(20)
   const [tab, setTab] = useState('all')
+  const [asset, setAsset] = useState('all')
+  const [wf, setWf] = useState(null)
 
-  const runs = useMemo(
+  useEffect(() => {
+    ;(async () => {
+      try {
+        let r = await fetch('/api/walkforward')
+        if (r.ok) {
+          const d = await r.json()
+          if (d.available) return setWf(d)
+        }
+        r = await fetch('/data/walkforward.json')
+        if (r.ok) setWf(await r.json())
+      } catch { /* no walk-forward yet */ }
+    })()
+  }, [])
+
+  const tabRuns = useMemo(
     () =>
       tab === 'all'
         ? allRuns
         : allRuns.filter((r) => isCrypto(r.symbol) === (tab === 'crypto')),
     [allRuns, tab],
   )
+  const tabSymbols = useMemo(
+    () => [...new Set(tabRuns.map((r) => r.symbol))].sort(),
+    [tabRuns],
+  )
+  const runs = useMemo(
+    () => (asset === 'all' ? tabRuns : tabRuns.filter((r) => r.symbol === asset)),
+    [tabRuns, asset],
+  )
 
   const setups = useMemo(() => groupSetups(runs), [runs])
-  const symbols = useMemo(() => new Set(runs.map((r) => r.symbol)), [runs])
-
   const viable = runs.filter((r) => (r.n_trades ?? 0) >= 30 && r.profit_factor != null)
   const best = [...viable].sort((a, b) => b.profit_factor - a.profit_factor)[0]
 
@@ -153,18 +200,31 @@ export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) 
     <div>
       <h1 className="page-title">Overview</h1>
       <p className="page-sub">Registry snapshot · {generatedAt || 'live'}</p>
-      <div className="tabs">
-        {TABS.map(([id, label]) => (
-          <button key={id} className={tab === id ? 'active' : ''}
-            onClick={() => setTab(id)}>
-            {label}
-          </button>
-        ))}
+      <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div className="tabs" style={{ marginBottom: 18 }}>
+          {TABS.map(([id, label]) => (
+            <button key={id} className={tab === id ? 'active' : ''}
+              onClick={() => { setTab(id); setAsset('all') }}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="filters" style={{ marginBottom: 18 }}>
+          <label>asset
+            <select value={asset} onChange={(e) => setAsset(e.target.value)}>
+              <option value="all">All ({tabSymbols.length})</option>
+              {tabSymbols.map((s) => <option key={s}>{s}</option>)}
+            </select>
+          </label>
+        </div>
       </div>
+
+      {asset !== 'all' && <BestStrategy symbol={asset} symbolRuns={runs} wf={wf} />}
+
       <div className="tiles">
         <div className="tile"><div className="k">Backtests logged</div><div className="v">{runs.length.toLocaleString()}</div></div>
         <div className="tile"><div className="k">Distinct setups</div><div className="v">{setups.length.toLocaleString()}</div></div>
-        <div className="tile"><div className="k">Assets</div><div className="v">{symbols.size}</div></div>
+        <div className="tile"><div className="k">Assets</div><div className="v">{new Set(runs.map((r) => r.symbol)).size}</div></div>
         <div className="tile">
           <div className="k">Best profit factor (≥30 trades)</div>
           <div className="v">{best ? num(best.profit_factor) : '—'}</div>
@@ -173,29 +233,6 @@ export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) 
       </div>
 
       <ProcessingStatus onOpenExecute={onOpenExecute} />
-
-      <div className="card">
-        <h3>Research flow — how a setup earns trust here</h3>
-        <ol className="flow">
-          {FLOW.map((s) => {
-            const count = s.tags.length
-              ? runs.filter((r) => s.tags.includes(r.sweep_tag)).length
-              : null
-            return (
-              <li key={s.n}>
-                <div className="flow-head">
-                  <span className="flow-n">{s.n}</span>
-                  <b>{s.title}</b>
-                  {count != null && (
-                    <span className="hint">{count.toLocaleString()} runs logged</span>
-                  )}
-                </div>
-                <p>{s.desc}</p>
-              </li>
-            )
-          })}
-        </ol>
-      </div>
 
       <div className="card">
         <h3>Profit factor vs. trade count — every logged run</h3>
@@ -215,7 +252,7 @@ export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) 
           <thead>
             <tr>
               <th className="txt">Setup</th><th className="txt">Asset</th><th>Trades</th>
-              <th>Win %</th><th>PF @0.04%</th><th>PF @0.10%</th><th>Return</th><th>Max DD</th><th>Sharpe</th>
+              <th>Win %</th><th>PF @low fee</th><th>PF @high fee</th><th>Return</th><th>Max DD</th><th>Sharpe</th>
             </tr>
           </thead>
           <tbody>

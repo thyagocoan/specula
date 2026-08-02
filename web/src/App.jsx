@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { loadRuns } from './data.js'
 import Overview from './pages/Overview.jsx'
+import ResearchFlow from './pages/ResearchFlow.jsx'
 import Assets from './pages/Assets.jsx'
 import Setups from './pages/Setups.jsx'
 import Runs from './pages/Runs.jsx'
@@ -9,6 +10,7 @@ import Execute from './pages/Execute.jsx'
 
 const PAGES = [
   ['overview', 'Overview'],
+  ['flow', 'Research Flow'],
   ['assets', 'Assets'],
   ['setups', 'Setups'],
   ['runs', 'Runs'],
@@ -78,6 +80,7 @@ export default function App() {
           <Overview runs={runs} generatedAt={data.generated_at}
             onOpenExecute={() => setPage('execute')} />
         )}
+        {page === 'flow' && <ResearchFlow runs={runs} />}
         {page === 'assets' && <Assets runs={runs} />}
         {page === 'setups' && <Setups runs={runs} />}
         {page === 'runs' && <Runs runs={runs} />}
