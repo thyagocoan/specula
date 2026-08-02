@@ -3,8 +3,15 @@
 import itertools
 import json
 
-FEES = [0.0004, 0.001]          # crypto: futures taker / spot taker
-EQUITY_FEES = [0.0001, 0.0005]  # equities: zero-commission, cost is spread (1bp / 5bp)
+# fee scenarios: [your configured fee, a 2.5x stressed fee] per side.
+# Configure via the portal Settings card (data/meta/settings.json).
+from specula.settings import get_settings
+
+_s = get_settings()
+FEES = sorted({round(_s["fee_crypto_pct"] / 100, 6),
+               round(2.5 * _s["fee_crypto_pct"] / 100, 6)})
+EQUITY_FEES = sorted({round(_s["fee_stock_pct"] / 100, 6),
+                      round(2.5 * _s["fee_stock_pct"] / 100, 6)})
 
 TF_PAIRS = [
     ("4h", e) for e in ["1h", "30min", "15min", "5min", "1min"]

@@ -274,6 +274,36 @@ def get_curves_file():
     raise HTTPException(404, "curves not generated yet")
 
 
+class SettingsUpdate(BaseModel):
+    fee_crypto_pct: float | None = None
+    fee_stock_pct: float | None = None
+    capital_usd: float | None = None
+    trade_size_usd: float | None = None
+
+
+@app.get("/api/settings")
+def settings_get():
+    from specula.settings import get_settings
+    return get_settings()
+
+
+@app.post("/api/settings")
+def settings_update(u: SettingsUpdate):
+    from specula.settings import save_settings
+    vals = {k: v for k, v in u.model_dump().items() if v is not None}
+    for k, v in vals.items():
+        if k.startswith("fee") and not (0 <= v <= 5):
+            raise HTTPException(400, f"{k} must be between 0 and 5 (percent per side)")
+        if not k.startswith("fee") and v < 0:
+            raise HTTPException(400, f"{k} must be >= 0")
+    s = save_settings(vals)
+    _curve_cache.clear()   # cached curves/trades were built with old settings
+    _trades_cache.clear()
+    return {"ok": True, "settings": s,
+            "note": "applies to new backtests/curves; running jobs and "
+                    "historical registry rows keep their recorded fees"}
+
+
 class AutotradeUpdate(BaseModel):
     symbol: str
     enabled: bool

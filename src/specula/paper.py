@@ -11,11 +11,19 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from specula.settings import get_settings
+
 DB = Path("data/meta/registry.sqlite")
 SLIPPAGE = 0.0005
 
 MAX_OPEN = int(os.environ.get("SPECULA_MAX_OPEN_POSITIONS", "5"))
 DAILY_LOSS_CAP_USD = float(os.environ.get("SPECULA_DAILY_LOSS_CAP_USD", "300"))
+
+
+def _fee_pct(symbol: str) -> float:
+    s = get_settings()
+    is_crypto = symbol.endswith(("USDT", "USDC"))
+    return (s["fee_crypto_pct"] if is_crypto else s["fee_stock_pct"]) / 100
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS paper_positions (
@@ -95,6 +103,7 @@ def close_position(pid: int, price: float, reason: str) -> dict | None:
         symbol, side, qty, entry = row
         fill = price * (1 - SLIPPAGE) if side == "long" else price * (1 + SLIPPAGE)
         pnl_usd = (fill - entry) * qty if side == "long" else (entry - fill) * qty
+        pnl_usd -= (entry + fill) * qty * _fee_pct(symbol)  # entry + exit fees
         pnl_pct = 100 * pnl_usd / (entry * qty)
         con.execute(
             "UPDATE paper_positions SET status='closed', exit_price=?, "

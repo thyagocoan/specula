@@ -10,8 +10,12 @@ from specula import mtf
 from specula.data import (is_equity, load_crypto_1m, load_equity_1m,
                           resample_equity, resample_ohlcv)
 
+from specula.settings import get_settings
+
 SLIPPAGE = 0.0001
-INIT_CASH = 100_000
+_SETTINGS = get_settings()
+INIT_CASH = _SETTINGS["capital_usd"]
+TRADE_SIZE_USD = _SETTINGS["trade_size_usd"]  # 0 = full capital per trade
 EOD_ENTRY_CUTOFF_MIN = 15 * 60 + 45  # no new entries from 15:45 ET
 
 _resample_cache: dict[tuple[str, str], pd.DataFrame] = {}
@@ -181,6 +185,9 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
         exits = exits | eod
         short_exits = short_exits | eod
 
+    size_kwargs = {}
+    if TRADE_SIZE_USD > 0:
+        size_kwargs = {"size": TRADE_SIZE_USD, "size_type": "value"}
     return vbt.Portfolio.from_signals(
         close=exec_df["close"],
         entries=entries,
@@ -198,6 +205,7 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
         slippage=SLIPPAGE,
         init_cash=INIT_CASH,
         freq=cfg["exec_tf"],
+        **size_kwargs,
     )
 
 

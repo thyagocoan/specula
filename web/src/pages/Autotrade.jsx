@@ -2,6 +2,59 @@ import { useEffect, useState } from 'react'
 import { Pf } from '../components/bits.jsx'
 import { num } from '../data.js'
 
+function SettingsCard() {
+  const [s, setS] = useState(null)
+  const [saved, setSaved] = useState(null)
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const r = await fetch('/api/settings')
+        if (r.ok) setS(await r.json())
+      } catch { /* offline */ }
+    })()
+  }, [])
+
+  async function save() {
+    setSaved(null)
+    const r = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(s),
+    })
+    const d = await r.json()
+    setSaved(r.ok ? { ok: true, text: 'saved — applies to new backtests, curves and paper trades' }
+      : { ok: false, text: d?.detail || 'save failed' })
+  }
+
+  if (!s) return null
+  const field = (key, label, step) => (
+    <label>{label}
+      <input type="number" step={step} value={s[key]}
+        onChange={(e) => setS({ ...s, [key]: Number(e.target.value) })} />
+    </label>
+  )
+  return (
+    <div className="card">
+      <h3>Backtest &amp; trading settings</h3>
+      <div className="filters">
+        {field('fee_crypto_pct', 'crypto fee %/side', 0.01)}
+        {field('fee_stock_pct', 'stock fee %/side', 0.005)}
+        {field('capital_usd', 'capital (USD)', 1000)}
+        {field('trade_size_usd', 'size per trade (USD, 0 = all-in)', 100)}
+        <button className="btn" onClick={save}>Save</button>
+      </div>
+      <p className="hint">
+        Backtests run two fee scenarios: your fee and a 2.5× stressed fee (the
+        two PF columns across the portal). Nightly reprocessing, sweeps, curve
+        and trigger views all pick these up; already-logged registry rows keep
+        the fee they were run with.
+      </p>
+      {saved && <p className={saved.ok ? 'pos' : 'neg'}>{saved.text}</p>}
+    </div>
+  )
+}
+
 // Which assets trade automatically (paper mode), each on its validated
 // best strategy. Enabling requires a positive out-of-sample verdict.
 export default function Autotrade() {
@@ -57,6 +110,8 @@ export default function Autotrade() {
           <span className={msg.ok ? 'pos' : 'neg'}>{msg.text}</span>
         </div>
       )}
+
+      <SettingsCard />
 
       <div className="card">
         <h3>Add asset</h3>
