@@ -7,6 +7,9 @@
 # Data lake — rebuildable from sources, too large for git
 data/
 
+# Generated backtest reports — rebuild any run via scripts/plot_run.py
+reports/
+
 # Python
 .venv/
 __pycache__/
