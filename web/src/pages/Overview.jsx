@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import CandleChart from '../components/CandleChart.jsx'
 import { Pf, Ret, Th, sortRows } from '../components/bits.jsx'
 import { groupSetups, isCrypto, num } from '../data.js'
@@ -228,6 +228,8 @@ function SetupCurve({ runId, days, symbol, onClose }) {
 
 function AssetReview({ symbol, runs, wf, days }) {
   const [selectedRun, setSelectedRun] = useState(null)
+  const [runTrades, setRunTrades] = useState({})
+  const fetched = useRef(new Set())
   const setups = useMemo(
     () => groupSetups(runs.filter((r) => r.symbol === symbol))
       .filter((s) => s.pf_low != null)
@@ -237,7 +239,55 @@ function AssetReview({ symbol, runs, wf, days }) {
   )
   const wfDocs = (wf?.symbols || []).filter(
     (d) => d.symbol === symbol || d.symbol === `${symbol}·lab`)
-  const period = wfPeriod(wf, symbol, days)
+
+  // the setup curves/journal treat as this asset's best (top PF, ≥30 trades)
+  const favKey = useMemo(
+    () => (setups.find((s) => s.n_trades >= 30) ?? setups[0])?.key,
+    [setups],
+  )
+
+  // pull each setup's real trades (few at a time; server caches them) so the
+  // table can show activity for whatever time window is selected
+  useEffect(() => {
+    let alive = true
+    const ids = setups.map((s) => s.byFee?.[s.fees?.[0]]?.run_id)
+      .filter((id) => id && !fetched.current.has(id))
+    ids.forEach((id) => fetched.current.add(id))
+    const queue = [...ids]
+    const workers = Array.from({ length: 3 }, async () => {
+      while (queue.length && alive) {
+        const id = queue.shift()
+        try {
+          const r = await fetch(`/api/trades/${id}`)
+          if (r.ok) {
+            const t = await r.json()
+            if (alive) setRunTrades((prev) => ({ ...prev, [id]: t }))
+          } else {
+            fetched.current.delete(id)
+          }
+        } catch {
+          fetched.current.delete(id)
+        }
+      }
+    })
+    Promise.all(workers)
+    return () => { alive = false }
+  }, [setups])
+
+  // "last week" etc. is anchored to the newest trade of this asset, so the
+  // window matches the data's last day, not the wall clock
+  const refT = useMemo(() => {
+    let m = null
+    for (const arr of Object.values(runTrades)) {
+      for (const t of arr) {
+        const x = Date.parse(t.entry_ts)
+        if (!m || x > m) m = x
+      }
+    }
+    return m
+  }, [runTrades])
+
+  const periodLabel = PERIODS.find(([, , d]) => d === days)?.[1] ?? 'All time'
 
   return (
     <>
@@ -265,16 +315,6 @@ function AssetReview({ symbol, runs, wf, days }) {
         </div>
       )}
 
-      {period.trades != null && (
-        <div className="card">
-          <h3>Activity in the selected period (out-of-sample)</h3>
-          <p style={{ margin: 0 }}>
-            <b>{period.trades}</b> daytrades ·
-            P&L <Ret v={period.pnl} />
-          </p>
-        </div>
-      )}
-
       {selectedRun && (
         <SetupCurve runId={selectedRun} days={days} symbol={symbol}
           onClose={() => setSelectedRun(null)} />
@@ -282,22 +322,39 @@ function AssetReview({ symbol, runs, wf, days }) {
 
       <div className="card">
         <h3>Top strategies for {symbol}{' '}
-          <span className="hint">(in-sample · click a row for its P&L-vs-price chart)</span></h3>
+          <span className="hint">(★ = best, used by curves &amp; journal ·
+            click a row for its chart, trigger log and period activity)</span></h3>
         <table className="grid">
           <thead>
             <tr>
               <th className="txt">Setup</th><th>Trades</th><th>Win %</th>
               <th>PF @low fee</th><th>PF @high fee</th><th>Return</th>
               <th>Max DD</th><th>Sharpe</th>
+              <th>Trades ({periodLabel})</th><th>P&L $ ({periodLabel})</th>
             </tr>
           </thead>
           <tbody>
             {setups.map((s) => {
               const runId = s.byFee?.[s.fees?.[0]]?.run_id
+              const tr = runTrades[runId]
+              let pn = null, pPnl = null
+              if (tr) {
+                const win = (days != null && refT)
+                  ? tr.filter((t) => Date.parse(t.entry_ts) >= refT - days * 86400e3)
+                  : tr
+                pn = win.length
+                pPnl = win.reduce((a, t) => a + (t.pnl_usd || 0), 0)
+              }
               return (
                 <tr key={s.key} className={runId ? 'selectable' : ''}
                   onClick={() => runId && setSelectedRun(runId)}>
-                  <td className="txt">{s.label}</td>
+                  <td className="txt">
+                    {s.key === favKey && (
+                      <span title="favourite — this asset's best setup"
+                        style={{ color: '#e8b93c', marginRight: 6 }}>★</span>
+                    )}
+                    {s.label}
+                  </td>
                   <td>{s.n_trades}</td>
                   <td>{num(s.win_rate, 1)}</td>
                   <td><Pf v={s.pf_low} /></td>
@@ -305,6 +362,8 @@ function AssetReview({ symbol, runs, wf, days }) {
                   <td><Ret v={s.total_return} /></td>
                   <td>{num(s.max_dd, 1)}%</td>
                   <td>{num(s.sharpe, 2)}</td>
+                  <td>{tr ? pn : <span className="hint">…</span>}</td>
+                  <td>{tr ? <Money v={pPnl} /> : <span className="hint">…</span>}</td>
                 </tr>
               )
             })}
