@@ -69,6 +69,7 @@ def main() -> int:
 
     if args.with_backtests:
         failures += not run("walk-forward", ["scripts/walkforward.py"])
+        failures += not run("equity curves", ["scripts/export_curves.py"])
 
     failures += not run("web export", ["scripts/export_web_data.py"])
 

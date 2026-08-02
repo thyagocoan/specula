@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import Line from '../components/Line.jsx'
 import Scatter from '../components/Scatter.jsx'
 import { Pf, Ret } from '../components/bits.jsx'
 import { groupSetups, isCrypto, num, setupLabel } from '../data.js'
@@ -8,6 +9,69 @@ const TABS = [
   ['crypto', 'Crypto'],
   ['stocks', 'Stocks'],
 ]
+
+const PERIODS = [
+  ['all', 'All time', null],
+  ['30', 'Last month', 30],
+  ['7', 'Last week', 7],
+  ['1', 'Last day', 1],
+]
+
+const SERIES_COLORS = ['var(--series-1)', 'var(--series-2)', 'var(--series-3, #1baf7a)']
+
+function slicedRebased(points, days) {
+  if (!points?.length) return null
+  let pts = points
+  if (days != null) {
+    const maxT = Date.parse(points[points.length - 1].t)
+    const cutoff = maxT - days * 86400e3
+    pts = points.filter((p) => Date.parse(p.t) >= cutoff)
+  }
+  if (pts.length < 2) return null
+  const base = pts[0].v
+  return pts.map((p) => ({ t: p.t, v: p.v / base }))
+}
+
+function PeriodPnL({ symbols, curves, wf, days, asset }) {
+  const series = useMemo(() => {
+    const out = []
+    if (asset !== 'all') {
+      const c = curves?.curves?.[asset]
+      const s = slicedRebased(c?.points, days)
+      if (s) out.push({ name: `${asset} best setup (in-sample)`, points: s })
+      const wfSym = wf?.symbols?.find((x) => x.symbol === asset)
+      const oos = slicedRebased(wfSym?.scenarios?.[0]?.equity, days)
+      if (oos) out.push({ name: `${asset} walk-forward OOS`, points: oos })
+    } else {
+      for (const sym of symbols.slice(0, 3)) {
+        const s = slicedRebased(curves?.curves?.[sym]?.points, days)
+        if (s) out.push({ name: `${sym} best setup`, points: s })
+      }
+    }
+    return out.map((s, i) => ({ ...s, color: SERIES_COLORS[i] }))
+  }, [symbols, curves, wf, days, asset])
+
+  return (
+    <div className="card">
+      <h3>P&L over selected period <span className="hint">(equity rebased to 1.0 at period start)</span></h3>
+      {series.length === 0 ? (
+        <p className="hint">no trades in this period for the selection</p>
+      ) : (
+        <>
+          <div style={{ marginBottom: 6 }}>
+            {series.map((s) => (
+              <span key={s.name} className="chip">
+                <span className="dot" style={{ background: s.color }} />
+                {s.name}: <Ret v={100 * (s.points[s.points.length - 1].v - 1)} />
+              </span>
+            ))}
+          </div>
+          <Line yLabel="equity multiple" series={series} height={330} />
+        </>
+      )}
+    </div>
+  )
+}
 
 function ProcessingStatus({ onOpenExecute }) {
   const [jobs, setJobs] = useState(null)
@@ -135,7 +199,9 @@ export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) 
   const [minTrades, setMinTrades] = useState(20)
   const [tab, setTab] = useState('all')
   const [asset, setAsset] = useState('all')
+  const [period, setPeriod] = useState('all')
   const [wf, setWf] = useState(null)
+  const [curves, setCurves] = useState(null)
 
   useEffect(() => {
     ;(async () => {
@@ -143,11 +209,16 @@ export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) 
         let r = await fetch('/api/walkforward')
         if (r.ok) {
           const d = await r.json()
-          if (d.available) return setWf(d)
+          if (d.available) { setWf(d) } else {
+            r = await fetch('/data/walkforward.json')
+            if (r.ok) setWf(await r.json())
+          }
         }
-        r = await fetch('/data/walkforward.json')
-        if (r.ok) setWf(await r.json())
       } catch { /* no walk-forward yet */ }
+      try {
+        const r = await fetch('/data/curves.json')
+        if (r.ok) setCurves(await r.json())
+      } catch { /* no curves yet */ }
     })()
   }, [])
 
@@ -216,6 +287,11 @@ export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) 
               {tabSymbols.map((s) => <option key={s}>{s}</option>)}
             </select>
           </label>
+          <label>time
+            <select value={period} onChange={(e) => setPeriod(e.target.value)}>
+              {PERIODS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+            </select>
+          </label>
         </div>
       </div>
 
@@ -234,16 +310,25 @@ export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) 
 
       <ProcessingStatus onOpenExecute={onOpenExecute} />
 
-      <div className="card">
-        <h3>Profit factor vs. trade count — every logged run</h3>
-        <div className="filters">
-          <label>min trades
-            <input type="number" min="1" value={minTrades}
-              onChange={(e) => setMinTrades(Number(e.target.value) || 1)} />
-          </label>
-          <span className="hint">{points.length} runs shown · dots above the dashed line are net winners after costs</span>
+      <div className="row2">
+        <div className="card">
+          <h3>Profit factor vs. trade count — every logged run</h3>
+          <div className="filters">
+            <label>min trades
+              <input type="number" min="1" value={minTrades}
+                onChange={(e) => setMinTrades(Number(e.target.value) || 1)} />
+            </label>
+            <span className="hint">{points.length} runs shown · full-period stats</span>
+          </div>
+          <Scatter points={points} height={330} />
         </div>
-        <Scatter points={points} />
+        <PeriodPnL
+          symbols={[...new Set(top.map((s) => s.symbol))]}
+          curves={curves}
+          wf={wf}
+          days={PERIODS.find(([id]) => id === period)?.[2] ?? null}
+          asset={asset}
+        />
       </div>
 
       <div className="card">
