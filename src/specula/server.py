@@ -78,11 +78,24 @@ JOB_TYPES = {
         "label": "League Explorer (new setup combinations until paused)",
         "cmd": [sys.executable, "scripts/league_explorer.py"],
     },
+    "readiness": {
+        "label": "Readiness report (approved setups validation battery)",
+        "cmd": [sys.executable, "scripts/readiness_report.py"],
+    },
 }
 
 JOBS: dict[str, dict] = {}
 LOG_DIR = Path("data/meta/job_logs")
 WALKFORWARD_JSON = Path("data/meta/walkforward.json")
+
+# discovery/portal machinery runs on the recent window even when the lake
+# holds years of history; the readiness job clears this for full-depth
+# validation. Inherited by every job subprocess.
+from datetime import timedelta as _td
+
+os.environ.setdefault(
+    "SPECULA_FRAME_START",
+    (datetime.now(timezone.utc) - _td(days=400)).strftime("%Y-%m-%d"))
 
 
 def _now() -> str:
@@ -557,6 +570,19 @@ def post_favsetups(u: FavSetupUpdate):
 LEAGUE_JSON = Path("data/meta/setup_league.json")
 EXPLORER_STATE = Path("data/meta/explorer_state.json")
 SECTORS_JSON = Path("data/meta/sectors.json")
+
+
+READINESS_JSON = Path("data/meta/readiness.json")
+
+
+@app.get("/api/readiness")
+def get_readiness():
+    """Latest readiness-report results (run the readiness job to refresh)."""
+    if not READINESS_JSON.exists():
+        return {"available": False}
+    doc = json.loads(READINESS_JSON.read_text(encoding="utf-8"))
+    doc["available"] = True
+    return doc
 
 
 @app.get("/api/sectors")

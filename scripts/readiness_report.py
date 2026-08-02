@@ -18,6 +18,7 @@ Run: uv run python scripts/readiness_report.py [--assets-per-setup 12]
 import argparse
 import json
 import math
+import os
 import random
 import sys
 from collections import defaultdict
@@ -25,6 +26,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+# validation reads the WHOLE lake — clear the discovery window the server
+# environment sets for its job subprocesses
+os.environ.pop("SPECULA_FRAME_START", None)
 
 SIZE_USD = 1000.0  # per-class stock size
 
@@ -76,8 +81,16 @@ def block_bootstrap(daily, n_sims=2000, block=5, rng=None):
 
 def setup_trades(params, symbols, fee):
     """(entry_ns, usd_pnl) per closed trade across the given symbols."""
+    import gc
+
+    from specula import backtest
     from specula.backtest import build_portfolio
 
+    # multi-year frames are big — keep the caches bounded per call
+    backtest._resample_cache.clear()
+    backtest._signal_cache.clear()
+    backtest._breakout_cache.clear()
+    gc.collect()
     out = []
     for sym in symbols:
         cfg = {**params, "symbol": sym, "fee": fee}
@@ -281,6 +294,22 @@ def main():
     out = Path(f"reports/readiness-{now}.md")
     out.parent.mkdir(exist_ok=True)
     out.write_text("\n".join(lines), encoding="utf-8")
+
+    # portal-readable JSON (the Setups page Readiness tab)
+    matrix = [[corr(series[a], series[b]) for b in labels] for a in labels]
+    doc = {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "cutoff": cutoff, "assets_per_setup": args.assets_per_setup,
+        "stress_mult": args.stress_mult, "size_usd": SIZE_USD,
+        "results": [{k: v for k, v in r.items() if k != "trades"}
+                    for r in results],
+        "corr": {"labels": labels, "matrix": matrix},
+        "combined": {"pnl": round(sum(combined), 2), "days": len(all_days),
+                     "max_dd": round(comb_dd, 2), "mc": comb_mc},
+        "report_file": f"/reports/readiness-{now}.md",
+    }
+    Path("data/meta/readiness.json").write_text(
+        json.dumps(doc), encoding="utf-8")
 
     print("\n" + "=" * 72)
     for r in results:

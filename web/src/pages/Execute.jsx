@@ -111,6 +111,7 @@ export default function Execute({ apiUp }) {
     { id: 'overnight_lab', label: 'Overnight strategy lab', desc: 'Full discovery pipeline: MA megasweep → ORB/VWAP/RSI coarse → scoring → 1m refine → walk-forward on candidates (~6h).' },
     { id: 'setup_league', label: 'Setup League', desc: 'Backtest every candidate setup (★ favourites + auto picks) on ALL assets and rank them on a 60-day holdout — feeds the League page.' },
     { id: 'league_explorer', label: 'League Explorer', desc: 'Endless discovery: each round tests ~200 never-tried setup combinations on every asset until paused. Control it from the League page.' },
+    { id: 'readiness', label: 'Readiness report', desc: 'Validation battery for the approved setups on the FULL data history: Monte Carlo, fee stress, monthly consistency, correlations. Results on the Setups → Readiness tab.' },
   ])
   const [selected, setSelected] = useState(null)
   const [error, setError] = useState(null)

@@ -116,7 +116,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default="2025-07", help="first month, YYYY-MM")
     ap.add_argument("--symbols", default=",".join(SYMBOLS))
+    ap.add_argument("--adjustments", default=",".join(ADJUSTMENTS),
+                    help="comma list: raw,all (backfills use just 'all')")
     args = ap.parse_args()
+    adjustments = [a.strip() for a in args.adjustments.split(",") if a.strip()]
 
     today = date.today()
     current_ym = today.strftime("%Y-%m")
@@ -132,7 +135,7 @@ def main() -> int:
     t0 = time.monotonic()
     with httpx.Client(headers=headers, timeout=60) as client:
         for symbol in symbols:
-            for adjustment in ADJUSTMENTS:
+            for adjustment in adjustments:
                 out_dir = (
                     data_root / "raw" / "alpaca" / "stocks" / "1min"
                     / f"adjustment={adjustment}" / f"symbol={symbol}"

@@ -253,6 +253,181 @@ function ScoreTable({ title, hint, rows, sort, setSort, isApproved, onAction, em
   )
 }
 
+// Advanced validation battery for the approved shortlist: Monte Carlo,
+// fee stress, monthly consistency, concentration, correlations. The tab the
+// user checks after approving anything new.
+function ReadinessView() {
+  const [doc, setDoc] = useState(null)
+  const [msg, setMsg] = useState(null)
+  const [running, setRunning] = useState(false)
+
+  async function load() {
+    try {
+      const r = await fetch('/api/readiness')
+      if (r.ok) setDoc(await r.json())
+    } catch { /* offline */ }
+  }
+
+  useEffect(() => {
+    load()
+    const t = setInterval(async () => {
+      try {
+        const r = await fetch('/api/jobs')
+        if (!r.ok) return
+        const job = (await r.json()).find(
+          (j) => j.type === 'readiness' && j.status === 'running')
+        setRunning((prev) => {
+          if (prev && !job) load() // just finished → refresh results
+          return !!job
+        })
+      } catch { /* offline */ }
+    }, 4000)
+    return () => clearInterval(t)
+  }, [])
+
+  async function run() {
+    setMsg(null)
+    const r = await fetch('/api/jobs/readiness', { method: 'POST' })
+    const d = await r.json().catch(() => ({}))
+    setMsg(r.ok
+      ? { ok: true, text: 'readiness battery started (~10–25 min) — this tab refreshes itself when it finishes' }
+      : { ok: false, text: d?.detail || 'launch failed (another job running?)' })
+  }
+
+  const V_BADGE = {
+    READY: 'done', BORDERLINE: 'running', 'NOT READY': 'failed',
+  }
+
+  return (
+    <>
+      <div className="controls">
+        <button className="btn" onClick={run} disabled={running}>
+          {running ? 'running…' : 'Run readiness now'}
+        </button>
+        {running && <span className="badge running">battery in progress</span>}
+        {doc?.report_file && (
+          <a className="btn ghost" href={doc.report_file} target="_blank"
+            rel="noreferrer">raw report file</a>
+        )}
+      </div>
+      {msg && (
+        <div className="card">
+          <span className={msg.ok ? 'pos' : 'neg'}>{msg.text}</span>
+        </div>
+      )}
+
+      {!doc?.available ? (
+        <div className="card">
+          <p className="hint">no readiness results yet — approve setups on
+            the League tab, then hit "Run readiness now".</p>
+        </div>
+      ) : (
+        <>
+          <p className="page-sub">
+            generated {doc.generated_at} · holdout cutoff{' '}
+            {doc.cutoff?.slice(0, 10)} · top {doc.assets_per_setup}
+            {' '}assets/setup at ${num(doc.size_usd, 0)}/trade · fee stress
+            ×{doc.stress_mult}. Caveats: per-setup asset lists are picked by
+            full-period PF (flattering), and daily aggregation hides
+            intraday drawdowns — treat the structure as real, the absolute
+            dollars as optimistic.
+          </p>
+
+          {(doc.results || []).map((r) => (
+            <div className="card" key={r.sig}>
+              <h3>
+                <span className={`badge ${V_BADGE[r.verdict] || 'running'}`}>
+                  {r.verdict}</span>{' '}
+                {r.label}
+              </h3>
+              <p style={{ margin: '6px 0' }}>
+                {r.n_trades} trades ({r.hold_trades} holdout,{' '}
+                <Money v={r.hold_pnl} />) · train PF <Pf v={r.train_pf} /> ·
+                holdout PF <Pf v={r.hold_pf} /> · stressed{' '}
+                <Pf v={r.stress_pf} /> · months positive{' '}
+                <b>{r.pos_months}/{r.months}</b> (worst{' '}
+                <Money v={r.worst_month} />) · top-10 trades{' '}
+                {num(100 * (r.conc ?? 0), 0)}% of profit
+              </p>
+              {r.mc && (
+                <p className="hint" style={{ margin: '0 0 6px' }}>
+                  Monte Carlo (1y, 2000 sims): median{' '}
+                  <Money v={r.mc.p50_total} /> · 5% worst{' '}
+                  <Money v={r.mc.p05_total} /> · P(losing year){' '}
+                  {num(100 * r.mc.p_loss, 0)}% · median max DD{' '}
+                  <Money v={r.mc.p50_dd} /> · 5% worst DD{' '}
+                  <Money v={r.mc.p05_dd} />
+                </p>
+              )}
+              <p style={{ margin: 0 }}>
+                {Object.entries(r.checks || {}).map(([k, v]) => (
+                  <span key={k} className="chip"
+                    title={v ? 'passed' : 'failed'}>
+                    {v ? '✅' : '❌'} {k}
+                  </span>
+                ))}
+              </p>
+            </div>
+          ))}
+
+          {doc.corr && (
+            <div className="card">
+              <h3>Cross-setup daily P&L correlation{' '}
+                <span className="hint">(≥0.8 = the same bet held twice, not
+                  diversification)</span></h3>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="grid">
+                  <thead>
+                    <tr>
+                      <th className="txt" />
+                      {doc.corr.labels.map((_, i) => <th key={i}>S{i + 1}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {doc.corr.matrix.map((row, i) => (
+                      <tr key={i}>
+                        <td className="txt"><b>S{i + 1}</b></td>
+                        {row.map((c, j) => (
+                          <td key={j} style={c != null && c >= 0.8 && i !== j
+                            ? { color: 'var(--neg, #e34948)', fontWeight: 600 }
+                            : undefined}>
+                            {c != null ? c.toFixed(2) : '—'}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="hint">
+                {doc.corr.labels.map((l, i) => (
+                  <span key={i}>S{i + 1}: {l}<br /></span>
+                ))}
+              </p>
+            </div>
+          )}
+
+          {doc.combined && (
+            <div className="card">
+              <h3>Combined portfolio (all approved, simultaneous)</h3>
+              <p style={{ margin: 0 }}>
+                total P&amp;L <Money v={doc.combined.pnl} /> over{' '}
+                {doc.combined.days} trading days · realized max DD{' '}
+                <Money v={doc.combined.max_dd} />
+                {doc.combined.mc && (
+                  <> · MC median <Money v={doc.combined.mc.p50_total} /> ·
+                    5% worst year <Money v={doc.combined.mc.p05_total} /> ·
+                    P(losing year) {num(100 * doc.combined.mc.p_loss, 0)}%</>
+                )}
+              </p>
+            </div>
+          )}
+        </>
+      )}
+    </>
+  )
+}
+
 // Setup League: candidate setups validated across the whole universe with a
 // holdout split. The holdout columns are the only ones that matter for
 // approval — train numbers include the data the setups were discovered on.
@@ -264,6 +439,7 @@ export default function League() {
   // default order = rank: eligible leaders first, unranked rows last
   const [sort, setSort] = useState({ col: 'rank', dir: 'asc' })
   const [cls, setCls] = useState('all')
+  const [view, setView] = useState('league')
 
   async function load() {
     try {
@@ -359,20 +535,35 @@ export default function League() {
 
       <div className="controls">
         <div className="tabs">
-          {[['all', 'All'], ['stock', 'Stocks'], ['crypto', 'Crypto']].map(([id, label]) => (
-            <button key={id} className={cls === id ? 'active' : ''}
-              onClick={() => setCls(id)}>
+          {[['league', 'League'], ['readiness', 'Readiness']].map(([id, label]) => (
+            <button key={id} className={view === id ? 'active' : ''}
+              onClick={() => setView(id)}>
               {label}
             </button>
           ))}
         </div>
-        <button className="btn" onClick={launch}>Run the league now</button>
-        <button className="btn" onClick={syncRoster}
-          title="each approved setup's top-10 league assets go onto the scanner roster (best setup kept when symbols collide) — the scanner then paper-trades them live">
-          Send approved to scanner ▶
-        </button>
+        {view === 'league' && (
+          <>
+            <div className="tabs">
+              {[['all', 'All'], ['stock', 'Stocks'], ['crypto', 'Crypto']].map(([id, label]) => (
+                <button key={id} className={cls === id ? 'active' : ''}
+                  onClick={() => setCls(id)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <button className="btn" onClick={launch}>Run the league now</button>
+            <button className="btn" onClick={syncRoster}
+              title="each approved setup's top-10 league assets go onto the scanner roster (best setup kept when symbols collide) — the scanner then paper-trades them live">
+              Send approved to scanner ▶
+            </button>
+          </>
+        )}
       </div>
 
+      {view === 'readiness' && <ReadinessView />}
+
+      {view === 'league' && <>
       <ExplorerCard />
       <LeagueProgress onDone={load} />
 
@@ -433,6 +624,7 @@ export default function League() {
           </p>
         </>
       )}
+      </>}
     </div>
   )
 }

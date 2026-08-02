@@ -2,6 +2,8 @@
 sweep, the run registry, and on-demand plotting, so any logged run can be
 reproduced exactly from its stored params."""
 
+import os
+
 import numpy as np
 import pandas as pd
 import vectorbt as vbt
@@ -30,14 +32,18 @@ _breakout_cache: dict[tuple, tuple] = {}
 
 
 def frames(symbol: str, tf: str) -> pd.DataFrame:
+    """Resampled bars for a symbol. SPECULA_FRAME_START (ISO date env var)
+    windows the underlying 1m data — the discovery pipeline runs on the
+    recent window while validation (readiness) reads the whole lake."""
     key = (symbol, tf)
     if key not in _resample_cache:
-        if is_equity(symbol):
-            _resample_cache[key] = resample_equity(
-                load_equity_1m(symbol, session="regular"), tf
-            )
-        else:
-            _resample_cache[key] = resample_ohlcv(load_crypto_1m(symbol), tf)
+        df = (load_equity_1m(symbol, session="regular") if is_equity(symbol)
+              else load_crypto_1m(symbol))
+        start = os.environ.get("SPECULA_FRAME_START")
+        if start:
+            df = df[df.index >= pd.Timestamp(start, tz="UTC")]
+        _resample_cache[key] = (resample_equity(df, tf) if is_equity(symbol)
+                                else resample_ohlcv(df, tf))
     return _resample_cache[key]
 
 
