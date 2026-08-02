@@ -69,6 +69,12 @@ def main() -> int:
 
     if args.with_backtests:
         failures += not run("walk-forward", ["scripts/walkforward.py"])
+        if Path("data/meta/lab_candidates.json").exists():
+            failures += not run(
+                "walk-forward (lab candidates)",
+                ["scripts/walkforward.py", "--candidates",
+                 "data/meta/lab_candidates.json"],
+            )
         failures += not run("equity curves", ["scripts/export_curves.py"])
 
     failures += not run("web export", ["scripts/export_web_data.py"])
