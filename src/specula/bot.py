@@ -19,6 +19,24 @@ from pathlib import Path
 import anthropic
 from anthropic import beta_tool
 
+try:
+    from zoneinfo import ZoneInfo
+    LOCAL_TZ = ZoneInfo("Australia/Melbourne")
+except Exception:  # tzdata missing — fall back to UTC display
+    LOCAL_TZ = timezone.utc
+
+
+def local_time(ts_iso: str | None) -> str:
+    """UTC ISO timestamp -> Melbourne local display."""
+    if not ts_iso:
+        return "?"
+    try:
+        dt = datetime.fromisoformat(ts_iso)
+        return dt.astimezone(LOCAL_TZ).strftime("%a %d %b %H:%M")
+    except Exception:
+        return ts_iso
+
+
 DB = Path("data/meta/registry.sqlite")
 WF = Path("data/meta/walkforward.json")
 API = "http://127.0.0.1:8756"
@@ -75,6 +93,7 @@ def get_system_status() -> str:
         out["walkforward_generated"] = wf.get("generated_at")
         out["walkforward_symbols"] = len(wf.get("symbols", []))
     out["now_utc"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    out["now_melbourne"] = datetime.now(LOCAL_TZ).strftime("%a %d %b %H:%M")
     return json.dumps(out)
 
 
@@ -244,7 +263,11 @@ anything, say that actions happen via the portal, not chat.
 - You DO automatically push a Telegram alert whenever a background job \
 finishes (done or failed). If the user asks to be notified when work \
 completes, confirm it will happen automatically — no need to check back.
-- Fee context: crypto fees 0.04%/0.10% per side; stocks 0.01%/0.05%."""
+- Fee context: crypto fees 0.04%/0.10% per side; stocks 0.01%/0.05%.
+- The user is in Melbourne, Australia (Australia/Melbourne, UTC+10/+11). \
+Stored timestamps are UTC — always convert to Melbourne local time when \
+presenting them (get_system_status returns now_utc and now_melbourne to \
+anchor the conversion)."""
 
 
 # ------------------------------------------------------------------ telegram
@@ -274,9 +297,10 @@ def handle_command(cmd: str) -> str:
             lines.append("running: " + ", ".join(s["running_jobs"]))
         lines += [
             f"registry: {s.get('registry_runs', 0):,} runs "
-            f"(last {s.get('last_run_logged', '?')})",
+            f"(last {local_time(s.get('last_run_logged'))})",
             f"walk-forward: {s.get('walkforward_symbols', 0)} symbols, "
-            f"generated {s.get('walkforward_generated', 'never')}",
+            f"generated {local_time(s.get('walkforward_generated'))}",
+            f"local time: {s.get('now_melbourne')}",
         ]
         return "\n".join(lines)
     if cmd.startswith("/best"):
