@@ -8,6 +8,123 @@ const Money = ({ v }) => v == null ? '—' : (
   </span>
 )
 
+// live progress for a running league job (parses its "step assets N/M" log)
+function LeagueProgress({ onDone }) {
+  const [state, setState] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    let wasRunning = false
+    async function poll() {
+      try {
+        const r = await fetch('/api/jobs')
+        if (!r.ok) return
+        const lg = (await r.json()).find(
+          (j) => j.type === 'setup_league' && j.status === 'running')
+        if (!lg) {
+          if (alive) setState(null)
+          if (wasRunning) { wasRunning = false; onDone?.() }
+          return
+        }
+        wasRunning = true
+        const lr = await fetch(`/api/jobs/${lg.id}?tail=80`)
+        if (!lr.ok || !alive) return
+        const log = (await lr.json()).log_tail || ''
+        let m, last = null
+        const re = /\[league\] step assets (\d+)\/(\d+)/g
+        while ((m = re.exec(log))) last = m
+        const hdr = log.match(/\[league\] (\d+) configs x (\d+) assets/)
+        const elapsed = (Date.now() - Date.parse(lg.started_at)) / 60000
+        const frac = last
+          ? Math.min(0.99, Number(last[1]) / Number(last[2]))
+          : 0.02
+        setState({
+          frac,
+          text: `${last ? `assets ${last[1]}/${last[2]}` : 'warming up'}`
+            + (hdr ? ` · ${hdr[1]} configs × ${hdr[2]} assets` : '')
+            + ` · elapsed ${elapsed.toFixed(1)} min`
+            + (frac > 0.03
+              ? ` · ~${Math.max(0, (elapsed / frac) * (1 - frac)).toFixed(1)} min left`
+              : ''),
+        })
+      } catch { /* keep last */ }
+    }
+    poll()
+    const t = setInterval(poll, 3000)
+    return () => { alive = false; clearInterval(t) }
+  }, [])
+
+  if (!state) return null
+  return (
+    <div className="card">
+      <h3><span className="badge running">running</span> Setup League</h3>
+      <div className="pbar-track">
+        <div className="pbar-fill" style={{ width: `${Math.round(state.frac * 100)}%` }} />
+      </div>
+      <p className="hint" style={{ marginBottom: 0 }}>
+        {Math.round(state.frac * 100)}% · {state.text} · the scorecard below
+        refreshes automatically when it finishes
+      </p>
+    </div>
+  )
+}
+
+function ScoreTable({ title, hint, rows, sort, setSort, isApproved, onAction, emptyText }) {
+  return (
+    <div className="card">
+      <h3>{title}</h3>
+      {hint && <p className="hint" style={{ marginTop: 0 }}>{hint}</p>}
+      {rows.length === 0 ? <p className="hint">{emptyText}</p> : (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="grid">
+            <thead>
+              <tr>
+                <Th id="rank" sort={sort} setSort={setSort}>Rank</Th>
+                <th className="txt">Setup</th>
+                <th className="txt">Source</th>
+                <Th id="assets_logged" sort={sort} setSort={setSort}>Assets</Th>
+                <Th id="train_pf" sort={sort} setSort={setSort}>Train PF</Th>
+                <Th id="train_trades" sort={sort} setSort={setSort}>Train trades</Th>
+                <Th id="hold_pf" sort={sort} setSort={setSort}>Holdout PF</Th>
+                <Th id="hold_trades" sort={sort} setSort={setSort}>Holdout trades</Th>
+                <Th id="hold_pnl_usd" sort={sort} setSort={setSort}>Holdout P&L $</Th>
+                <Th id="hold_assets_pf_gt1" sort={sort} setSort={setSort}>Assets PF&gt;1</Th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.sig}
+                  style={!r.eligible && !isApproved ? { opacity: 0.5 } : undefined}>
+                  <td>{r.rank ?? '—'}</td>
+                  <td className="txt">{isApproved && '✅ '}{r.label}</td>
+                  <td className="txt hint">{r.source}</td>
+                  <td>{r.assets_logged}</td>
+                  <td><Pf v={r.train_pf} /></td>
+                  <td>{r.train_trades}</td>
+                  <td><Pf v={r.hold_pf} /></td>
+                  <td>{r.hold_trades}</td>
+                  <td><Money v={r.hold_pnl_usd} /></td>
+                  <td>{r.hold_assets_pf_gt1}/{r.hold_assets}</td>
+                  <td>
+                    {isApproved
+                      ? <button className="btn ghost" onClick={() => onAction(r)}>
+                          demote</button>
+                      : <button className="btn ghost" disabled={!r.eligible}
+                          title={r.eligible ? '' : 'not eligible (too few holdout trades/assets)'}
+                          onClick={() => onAction(r)}>
+                          approve</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Setup League: candidate setups validated across the whole universe with a
 // holdout split. The holdout columns are the only ones that matter for
 // approval — train numbers include the data the setups were discovered on.
@@ -43,7 +160,7 @@ export default function League() {
         : { sig: row.sig, label: row.label, params: row.params, status }),
     })
     setMsg(r.ok
-      ? { ok: true, text: status === 'approved' ? `approved: ${row.label}` : `updated: ${row.label}` }
+      ? { ok: true, text: status === 'approved' ? `approved: ${row.label}` : `moved back to review: ${row.label}` }
       : { ok: false, text: 'update failed' })
     load()
   }
@@ -53,12 +170,13 @@ export default function League() {
     const r = await fetch('/api/jobs/setup_league', { method: 'POST' })
     const d = await r.json().catch(() => ({}))
     setMsg(r.ok
-      ? { ok: true, text: 'league run started — follow it on the Execute page' }
+      ? { ok: true, text: 'league run started — progress bar above' }
       : { ok: false, text: d?.detail || 'launch failed (another job running?)' })
   }
 
-  const statusOf = (sig) => favs.find((f) => f.sig === sig)?.status
-  const approved = favs.filter((f) => f.status === 'approved')
+  const approvedSigs = useMemo(
+    () => new Set(favs.filter((f) => f.status === 'approved').map((f) => f.sig)),
+    [favs])
 
   // flatten the chosen class's stats onto the row so sorting and rendering
   // read the same fields whatever the tab
@@ -73,6 +191,11 @@ export default function League() {
     }
     return sortRows(flat, sort.col, sort.dir)
   }, [doc, sort, cls])
+
+  const approvedRows = rows.filter((r) => approvedSigs.has(r.sig))
+  const reviewRows = rows.filter((r) => !approvedSigs.has(r.sig))
+  const approvedMissing = favs.filter(
+    (f) => f.status === 'approved' && !rows.some((r) => r.sig === f.sig))
 
   return (
     <div>
@@ -97,6 +220,8 @@ export default function League() {
         <button className="btn" onClick={launch}>Run the league now</button>
       </div>
 
+      <LeagueProgress onDone={load} />
+
       {err && <div className="card"><span className="neg">{err}</span></div>}
       {msg && (
         <div className="card">
@@ -104,92 +229,38 @@ export default function League() {
         </div>
       )}
 
-      <div className="card">
-        <h3>Approved shortlist ({approved.length})</h3>
-        {approved.length === 0
-          ? <p className="hint">nothing approved yet — run the league and
-              approve the top holdout performers below</p>
-          : (
-            <div>
-              {approved.map((f) => (
-                <span key={f.sig} className="chip" style={{ marginBottom: 6 }}>
-                  ✅ {f.label}
-                  <button className="btn ghost" style={{ marginLeft: 6, padding: '0 6px' }}
-                    onClick={() => setStatus({ sig: f.sig, label: f.label }, 'favourite')}>
-                    demote
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-      </div>
-
       {!doc?.available ? (
         <div className="card">
           <p className="hint">
             no league results yet — star a few setups on the Setups or
-            Overview pages, then hit "Run the league now" (it backtests
-            every candidate on every asset; expect ~15–40 minutes).
+            Overview pages, then hit "Run the league now".
           </p>
         </div>
       ) : (
-        <div className="card">
-          <h3>Scorecard</h3>
-          <p className="hint" style={{ marginTop: 0 }}>
-            generated {doc.generated_at} · holdout = trades after{' '}
-            {doc.cutoff?.slice(0, 10)} · eligible = ≥30 holdout trades on ≥5
-            assets · rank is by holdout pooled PF
-          </p>
-          <div style={{ overflowX: 'auto' }}>
-            <table className="grid">
-              <thead>
-                <tr>
-                  <Th id="rank" sort={sort} setSort={setSort}>Rank</Th>
-                  <th className="txt">Setup</th>
-                  <th className="txt">Source</th>
-                  <Th id="assets_logged" sort={sort} setSort={setSort}>Assets</Th>
-                  <Th id="train_pf" sort={sort} setSort={setSort}>Train PF</Th>
-                  <Th id="train_trades" sort={sort} setSort={setSort}>Train trades</Th>
-                  <Th id="hold_pf" sort={sort} setSort={setSort}>Holdout PF</Th>
-                  <Th id="hold_trades" sort={sort} setSort={setSort}>Holdout trades</Th>
-                  <Th id="hold_pnl_usd" sort={sort} setSort={setSort}>Holdout P&L $</Th>
-                  <Th id="hold_assets_pf_gt1" sort={sort} setSort={setSort}>Assets PF&gt;1</Th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => {
-                  const st = statusOf(r.sig)
-                  return (
-                    <tr key={r.sig}
-                      style={!r.eligible ? { opacity: 0.5 } : undefined}>
-                      <td>{r.rank ?? '—'}</td>
-                      <td className="txt">{r.label}</td>
-                      <td className="txt hint">{r.source}</td>
-                      <td>{r.assets_logged}</td>
-                      <td><Pf v={r.train_pf} /></td>
-                      <td>{r.train_trades}</td>
-                      <td><Pf v={r.hold_pf} /></td>
-                      <td>{r.hold_trades}</td>
-                      <td><Money v={r.hold_pnl_usd} /></td>
-                      <td>{r.hold_assets_pf_gt1}/{r.hold_assets}</td>
-                      <td>
-                        {st === 'approved'
-                          ? <button className="btn ghost"
-                              onClick={() => setStatus(r, 'favourite')}>
-                              ✅ approved</button>
-                          : <button className="btn ghost"
-                              disabled={!r.eligible}
-                              title={r.eligible ? '' : 'not eligible (too few holdout trades/assets)'}
-                              onClick={() => setStatus(r, 'approved')}>
-                              approve</button>}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+        <>
+          <ScoreTable
+            title={`Approved (${approvedRows.length})`}
+            hint="your live shortlist — these are the setups the scanner will monitor"
+            rows={approvedRows} sort={sort} setSort={setSort}
+            isApproved onAction={(r) => setStatus(r, 'favourite')}
+            emptyText="nothing approved yet — approve the best holdout performers below" />
+
+          {approvedMissing.length > 0 && (
+            <div className="card">
+              <p className="hint" style={{ margin: 0 }}>
+                approved but missing from the latest league run (re-run to
+                score them): {approvedMissing.map((f) => f.label).join(' · ')}
+              </p>
+            </div>
+          )}
+
+          <ScoreTable
+            title="To review"
+            hint={`generated ${doc.generated_at} · holdout = trades after ${doc.cutoff?.slice(0, 10)} · eligible = enough holdout trades/assets · rank = holdout pooled PF`}
+            rows={reviewRows} sort={sort} setSort={setSort}
+            isApproved={false} onAction={(r) => setStatus(r, 'approved')}
+            emptyText="nothing to review — run the league" />
+
           <p className="hint">
             trades/P&amp;L use ${num(doc.settings?.trade_size_stock_usd, 0)}
             /stock and ${num(doc.settings?.trade_size_crypto_usd, 0)}/crypto
@@ -197,7 +268,7 @@ export default function League() {
             {num(doc.settings?.fee_crypto_pct, 2)}% per side. Approval keeps a
             setup in the shortlist the live scanner will monitor (next phase).
           </p>
-        </div>
+        </>
       )}
     </div>
   )

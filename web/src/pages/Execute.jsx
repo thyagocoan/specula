@@ -26,7 +26,7 @@ function ProgressCard({ job }) {
       } catch { /* keep last */ }
     }
     poll()
-    const t = setInterval(poll, 10000)
+    const t = setInterval(poll, 4000)
     return () => { alive = false; clearInterval(t) }
   }, [job.id])
 
@@ -46,12 +46,36 @@ function ProgressCard({ job }) {
   const totalEst = LAB_STEPS.reduce((s, [, e]) => s + e, 0)
   const elapsedMin = (Date.now() - Date.parse(job.started_at)) / 60000
   const isLab = job.type === 'overnight_lab'
+  const isLeague = job.type === 'setup_league'
   let frac = null
+  let info = null
   if (isLab) {
     const completedEst = done.reduce((s, d) => s + (est[d] ?? 5), 0)
     const curEst = current ? (est[current] ?? 10) : 0
     const curElapsed = Math.min(Math.max(0, elapsedMin - doneMinutes), 0.95 * curEst)
     frac = Math.min(0.99, (completedEst + curElapsed) / totalEst)
+    info = (
+      <>step {done.length + (current ? 1 : 0)}/{LAB_STEPS.length}:
+        {' '}<b>{current || 'finishing'}</b> · elapsed {(elapsedMin / 60).toFixed(1)}h ·
+        ~{(totalEst * (1 - frac) / 60).toFixed(1)}h remaining</>
+    )
+  } else if (isLeague) {
+    // the league prints exact "[league] step assets N/M" lines — use them
+    let m, last = null
+    const re = /\[league\] step assets (\d+)\/(\d+)/g
+    while ((m = re.exec(log))) last = m
+    const hdr = log.match(/\[league\] (\d+) configs x (\d+) assets/)
+    frac = last
+      ? Math.min(0.99, Number(last[1]) / Number(last[2]))
+      : 0.02
+    const remain = frac > 0.03
+      ? ` · ~${Math.max(0, (elapsedMin / frac) * (1 - frac)).toFixed(1)} min remaining`
+      : ''
+    info = (
+      <>{last ? <>assets <b>{last[1]}/{last[2]}</b></> : 'warming up'}
+        {hdr && <> · {hdr[1]} configs × {hdr[2]} assets</>}
+        {' '}· elapsed {elapsedMin.toFixed(1)} min{remain}</>
+    )
   }
 
   return (
@@ -63,9 +87,7 @@ function ProgressCard({ job }) {
             <div className="pbar-fill" style={{ width: `${(frac * 100).toFixed(0)}%` }} />
           </div>
           <p className="hint" style={{ marginBottom: 0 }}>
-            {(frac * 100).toFixed(0)}% (rough estimate) · step {done.length + (current ? 1 : 0)}/{LAB_STEPS.length}:
-            {' '}<b>{current || 'finishing'}</b> · elapsed {(elapsedMin / 60).toFixed(1)}h ·
-            ~{(totalEst * (1 - frac) / 60).toFixed(1)}h remaining
+            {(frac * 100).toFixed(0)}% · {info}
           </p>
         </>
       ) : (
