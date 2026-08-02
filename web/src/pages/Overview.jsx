@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import Area from '../components/Area.jsx'
 import Line from '../components/Line.jsx'
 import Scatter from '../components/Scatter.jsx'
 import { Pf, Ret } from '../components/bits.jsx'
@@ -17,8 +18,6 @@ const PERIODS = [
   ['1', 'Last day', 1],
 ]
 
-const SERIES_COLORS = ['var(--series-1)', 'var(--series-2)', 'var(--series-3, #1baf7a)']
-
 function slicedRebased(points, days) {
   if (!points?.length) return null
   let pts = points
@@ -32,41 +31,55 @@ function slicedRebased(points, days) {
   return pts.map((p) => ({ t: p.t, v: p.v / base }))
 }
 
-function PeriodPnL({ symbols, curves, wf, days, asset }) {
-  const series = useMemo(() => {
-    const out = []
-    if (asset !== 'all') {
-      const c = curves?.curves?.[asset]
-      const s = slicedRebased(c?.points, days)
-      if (s) out.push({ name: `${asset} best setup (in-sample)`, points: s })
-      const wfSym = wf?.symbols?.find((x) => x.symbol === asset)
-      const oos = slicedRebased(wfSym?.scenarios?.[0]?.equity, days)
-      if (oos) out.push({ name: `${asset} walk-forward OOS`, points: oos })
-    } else {
-      for (const sym of symbols.slice(0, 3)) {
-        const s = slicedRebased(curves?.curves?.[sym]?.points, days)
-        if (s) out.push({ name: `${sym} best setup`, points: s })
-      }
-    }
-    return out.map((s, i) => ({ ...s, color: SERIES_COLORS[i] }))
-  }, [symbols, curves, wf, days, asset])
+function drawdown(points) {
+  let peak = -Infinity
+  return points.map((p) => {
+    peak = Math.max(peak, p.v)
+    return { t: p.t, v: p.v / peak - 1 }
+  })
+}
+
+// Report-style panel: strategy vs buy & hold equity + drawdown, for one symbol.
+function ReportPanel({ symbols, curves, days, asset }) {
+  const symbol = asset !== 'all' ? asset : symbols[0]
+  const c = curves?.curves?.[symbol]
+  const strat = useMemo(() => slicedRebased(c?.points, days), [c, days])
+  const bench = useMemo(() => slicedRebased(c?.bench, days), [c, days])
+  const dd = useMemo(() => (strat ? drawdown(strat) : null), [strat])
 
   return (
     <div className="card">
-      <h3>P&L over selected period <span className="hint">(equity rebased to 1.0 at period start)</span></h3>
-      {series.length === 0 ? (
-        <p className="hint">no trades in this period for the selection</p>
+      <h3>
+        {symbol ? `${symbol} — best setup vs buy & hold` : 'P&L'}
+        {asset === 'all' && symbol && (
+          <span className="hint"> · top asset shown, use the asset selector to change</span>
+        )}
+      </h3>
+      {c && <p className="hint" style={{ margin: '0 0 6px' }}>{c.label} · in-sample</p>}
+      {!strat ? (
+        <p className="hint">no curve data for this selection/period yet</p>
       ) : (
         <>
           <div style={{ marginBottom: 6 }}>
-            {series.map((s) => (
-              <span key={s.name} className="chip">
-                <span className="dot" style={{ background: s.color }} />
-                {s.name}: <Ret v={100 * (s.points[s.points.length - 1].v - 1)} />
+            <span className="chip">
+              <span className="dot" style={{ background: 'var(--series-1)' }} />
+              strategy: <Ret v={100 * (strat[strat.length - 1].v - 1)} />
+            </span>
+            {bench && (
+              <span className="chip">
+                <span className="dot" style={{ background: 'var(--series-2)' }} />
+                buy & hold: <Ret v={100 * (bench[bench.length - 1].v - 1)} />
               </span>
-            ))}
+            )}
+            <span className="chip">
+              max DD: <b style={{ marginLeft: 4 }}>{(100 * Math.min(...dd.map((p) => p.v))).toFixed(1)}%</b>
+            </span>
           </div>
-          <Line yLabel="equity multiple" series={series} height={330} />
+          <Line yLabel="equity multiple" height={240} series={[
+            { name: 'strategy', color: 'var(--series-1)', points: strat },
+            ...(bench ? [{ name: 'buy & hold', color: 'var(--series-2)', points: bench }] : []),
+          ]} />
+          <Area points={dd} height={120} />
         </>
       )}
     </div>
@@ -322,10 +335,9 @@ export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) 
           </div>
           <Scatter points={points} height={330} />
         </div>
-        <PeriodPnL
+        <ReportPanel
           symbols={[...new Set(top.map((s) => s.symbol))]}
           curves={curves}
-          wf={wf}
           days={PERIODS.find(([id]) => id === period)?.[2] ?? null}
           asset={asset}
         />

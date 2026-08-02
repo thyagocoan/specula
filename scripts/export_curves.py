@@ -50,11 +50,17 @@ def main() -> int:
         try:
             pf = build_portfolio(cfg)
             daily = (pf.value().resample("1d").last().dropna() / INIT_CASH)
+            bench = pf.close.dropna().resample("1d").last().dropna()
+            bench = bench / bench.iloc[0]
             curves[symbol] = {
                 "label": cfg_label(cfg, with_fee=True),
                 "points": [
                     {"t": str(ts.date()), "v": round(float(v), 4)}
                     for ts, v in daily.items()
+                ],
+                "bench": [
+                    {"t": str(ts.date()), "v": round(float(v), 4)}
+                    for ts, v in bench.items()
                 ],
             }
             print(f"[done] {symbol}: {len(daily)} daily points ({curves[symbol]['label']})",
