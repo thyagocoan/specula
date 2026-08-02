@@ -8,12 +8,12 @@ reproduced and visualized on demand:
 """
 
 import sys
-from pathlib import Path
 
 import pandas as pd
 
 from specula import runlog
 from specula.backtest import build_portfolio
+from specula.reporting import save_report
 
 
 def main() -> int:
@@ -27,18 +27,10 @@ def main() -> int:
         print(f"\n{len(df)} runs in registry")
         return 0
 
-    reports_dir = Path("reports")
-    reports_dir.mkdir(exist_ok=True)
     for run_id in args:
         cfg = runlog.get_cfg(run_id)
         pf = build_portfolio(cfg)
-        try:
-            fig = pf.plot()
-        except Exception:
-            fig = pf.value().vbt.plot()
-        fig.update_layout(title=f"{cfg['strategy']} {cfg['setup_tf']}->{cfg['exec_tf']} | run {run_id}")
-        dest = reports_dir / f"{run_id}.html"
-        fig.write_html(dest)
+        dest = save_report(pf, cfg, run_id)
         print(f"{run_id}: {cfg}\n  -> {dest}")
     return 0
 

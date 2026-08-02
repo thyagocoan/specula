@@ -8,7 +8,6 @@ Usage:
     uv run python scripts/sweep_mtf_btcusdt.py
 """
 
-import itertools
 import os
 import sys
 import time
@@ -19,40 +18,9 @@ import pandas as pd
 
 from specula import runlog
 from specula.backtest import build_portfolio, collect_metrics
+from specula.sweeps import TF_PAIRS, pair_configs
 
 SWEEP_TAG = "mtf-v1"
-FEES = [0.0004, 0.001]
-
-TF_PAIRS = [
-    ("4h", e) for e in ["1h", "30min", "15min", "5min", "1min"]
-] + [
-    ("2h", e) for e in ["30min", "15min", "5min", "1min"]
-] + [
-    ("1h", e) for e in ["30min", "15min", "5min", "1min"]
-] + [
-    ("30min", e) for e in ["15min", "5min", "1min"]
-] + [
-    ("15min", e) for e in ["5min", "1min"]
-] + [
-    ("5min", "1min"),
-]
-
-
-def pair_configs(setup_tf: str, exec_tf: str):
-    for dev, strict, target, fee in itertools.product(
-        [2.0, 2.5], [True, False], ["r1", "r2", "midband", "opposite"], FEES
-    ):
-        yield dict(
-            strategy="fffd", symbol="BTCUSDT", setup_tf=setup_tf,
-            exec_tf=exec_tf, dev=dev, strict=strict, target=target, fee=fee,
-        )
-    for adx, sl, tp, fee in itertools.product(
-        [True, False], [0.005, 0.01], [0.005, 0.01], FEES
-    ):
-        yield dict(
-            strategy="didi", symbol="BTCUSDT", setup_tf=setup_tf,
-            exec_tf=exec_tf, tol_bars=1, adx_filter=adx, sl=sl, tp=tp, fee=fee,
-        )
 
 
 def run_pair(pair: tuple[str, str]) -> list[tuple[dict, dict]]:
@@ -64,17 +32,10 @@ def run_pair(pair: tuple[str, str]) -> list[tuple[dict, dict]]:
     return out
 
 
-def save_report(cfg: dict, run_id: str, reports_dir: Path) -> Path:
-    pf = build_portfolio(cfg)
-    try:
-        fig = pf.plot()
-    except Exception:
-        fig = pf.value().vbt.plot()
-    label = f"{cfg['strategy']} {cfg['setup_tf']}->{cfg['exec_tf']}"
-    fig.update_layout(title=f"{label} | run {run_id}")
-    dest = reports_dir / f"{run_id}.html"
-    fig.write_html(dest)
-    return dest
+def make_report(cfg: dict, run_id: str, reports_dir: Path) -> Path:
+    from specula.reporting import save_report
+
+    return save_report(build_portfolio(cfg), cfg, run_id, reports_dir)
 
 
 def main() -> int:
@@ -109,7 +70,7 @@ def main() -> int:
     reports_dir.mkdir(exist_ok=True)
     import json
     for _, r in top.head(6).iterrows():
-        dest = save_report(json.loads(r["params"]), r["run_id"], reports_dir)
+        dest = make_report(json.loads(r["params"]), r["run_id"], reports_dir)
         print(f"report -> {dest}", flush=True)
     return 0
 
