@@ -266,6 +266,16 @@ def main() -> int:
         },
         "symbols": symbol_docs,
     }
+    def _json_safe(o):
+        if isinstance(o, dict):
+            return {k: _json_safe(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [_json_safe(v) for v in o]
+        if isinstance(o, float) and not np.isfinite(o):
+            return None
+        return o
+
+    doc = _json_safe(doc)
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(doc), encoding="utf-8")
     if WEB_OUT.parent.parent.exists():

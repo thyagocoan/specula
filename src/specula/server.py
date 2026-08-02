@@ -8,6 +8,7 @@ Start from the repo root:
 """
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -18,6 +19,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -25,6 +28,18 @@ from specula import runlog
 
 load_dotenv()
 app = FastAPI(title="specula-api")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+def _json_safe(o):
+    """inf/nan -> null recursively (strict JSON compliance)."""
+    if isinstance(o, dict):
+        return {k: _json_safe(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_json_safe(v) for v in o]
+    if isinstance(o, float) and not math.isfinite(o):
+        return None
+    return o
 
 JOB_TYPES = {
     "sweep_mtf": {
@@ -75,9 +90,23 @@ def _watch(job_id: str, proc: subprocess.Popen, log_handle) -> None:
     job["finished_at"] = _now()
 
 
+_runs_cache: dict = {"key": None, "body": None}
+
+
 @app.get("/api/runs")
 def get_runs():
-    return runlog.payload(runlog.load())
+    from fastapi import Response
+
+    con = runlog._connect()
+    try:
+        key = con.execute(
+            "SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM runs").fetchone()
+    finally:
+        con.close()
+    if _runs_cache["key"] != key:
+        _runs_cache["body"] = json.dumps(runlog.payload(runlog.load()))
+        _runs_cache["key"] = key
+    return Response(content=_runs_cache["body"], media_type="application/json")
 
 
 @app.get("/api/jobs")
@@ -172,7 +201,16 @@ def get_curve(run_id: str):
 def get_walkforward():
     if not WALKFORWARD_JSON.exists():
         return {"available": False}
-    return {"available": True, **json.loads(WALKFORWARD_JSON.read_text(encoding="utf-8"))}
+    doc = _json_safe(json.loads(WALKFORWARD_JSON.read_text(encoding="utf-8")))
+    return {"available": True, **doc}
+
+
+@app.get("/data/curves.json")
+def get_curves_file():
+    for p in (Path("data/meta/curves.json"), Path("web/public/data/curves.json")):
+        if p.exists():
+            return FileResponse(p, media_type="application/json")
+    raise HTTPException(404, "curves not generated yet")
 
 
 class AutotradeUpdate(BaseModel):

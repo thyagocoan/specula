@@ -40,6 +40,20 @@ function drawdown(points) {
 
 // out-of-sample trades + P&L for one symbol within the selected period,
 // from the walk-forward equity curve (one point per stitched OOS trade)
+function wfGlobalMaxT(wf) {
+  let m = null
+  for (const d of wf?.symbols || []) {
+    for (const s of d.scenarios || []) {
+      const e = s.equity
+      if (e?.length) {
+        const t = Date.parse(e[e.length - 1].t)
+        if (!m || t > m) m = t
+      }
+    }
+  }
+  return m
+}
+
 function wfPeriod(wf, symbol, days) {
   const docs = (wf?.symbols || []).filter(
     (d) => d.symbol === symbol || d.symbol === `${symbol}·lab`)
@@ -53,10 +67,13 @@ function wfPeriod(wf, symbol, days) {
   if (!best) return { trades: null, pnl: null }
   let pts = best.equity
   if (days != null) {
-    const maxT = Date.parse(pts[pts.length - 1].t)
-    pts = pts.filter((p) => Date.parse(p.t) >= maxT - days * 86400e3)
+    // window relative to the latest data day across ALL assets, so "last
+    // day" means the same calendar window for every symbol
+    const refT = wfGlobalMaxT(wf) ?? Date.parse(pts[pts.length - 1].t)
+    pts = pts.filter((p) => Date.parse(p.t) >= refT - days * 86400e3)
   }
   if (!pts.length) return { trades: 0, pnl: 0 }
+  if (pts.length === 1) return { trades: 1, pnl: 0 }
   return {
     trades: pts.length,
     pnl: 100 * (pts[pts.length - 1].v / pts[0].v - 1),

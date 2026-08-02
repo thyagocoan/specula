@@ -68,12 +68,15 @@ def main() -> int:
         except Exception as e:
             print(f"[error] {symbol}: {type(e).__name__}: {e}", flush=True)
 
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps({
+    doc = json.dumps({
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "note": "in-sample best setup per symbol, daily equity multiple",
         "curves": curves,
-    }), encoding="utf-8")
+    })
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(doc, encoding="utf-8")
+    meta_out = Path("data/meta/curves.json")  # served by the API in Docker
+    meta_out.write_text(doc, encoding="utf-8")
     print(f"\nwrote {OUT} ({len(curves)} symbols) in {(time.monotonic() - t0) / 60:.1f} min",
           flush=True)
     return 0

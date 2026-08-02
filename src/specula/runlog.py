@@ -217,8 +217,10 @@ def records(df: pd.DataFrame) -> list[dict]:
     """Registry rows as JSON-safe dicts (params parsed, inf/NaN -> null)."""
     import numpy as np
 
+    have_reports = ({p.stem for p in REPORTS.glob("*.html")}
+                    if REPORTS.exists() else set())
     recs = []
-    for _, r in df.iterrows():
+    for r in df.to_dict("records"):
         rec = {}
         for k, v in r.items():
             if k == "params":
@@ -229,11 +231,11 @@ def records(df: pd.DataFrame) -> list[dict]:
                 v = float(v)
                 if not math.isfinite(v):
                     v = None
-            elif v is not None and pd.isna(v):
+            elif v is not None and not isinstance(v, (str, int, bool)) and pd.isna(v):
                 v = None
             rec[k] = v
         rec["params"] = {k: _finite(v) for k, v in json.loads(r["params"]).items()}
-        rec["report"] = (REPORTS / f"{r['run_id']}.html").exists()
+        rec["report"] = r["run_id"] in have_reports
         recs.append(rec)
     return recs
 
