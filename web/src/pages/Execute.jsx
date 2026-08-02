@@ -7,6 +7,76 @@ const dur = (a, b) => {
   return s < 90 ? `${s}s` : `${Math.round(s / 60)}m`
 }
 
+// rough per-step minute estimates for the overnight lab progress bar
+const LAB_STEPS = [
+  ['equity bronze/silver', 25], ['quality report', 10], ['MA megasweep', 45],
+  ['lab coarse', 60], ['scoring', 3], ['lab refine', 45],
+  ['walk-forward (candidates)', 40], ['equity curves', 15], ['web export', 3],
+]
+
+function ProgressCard({ job }) {
+  const [log, setLog] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    async function poll() {
+      try {
+        const r = await fetch(`/api/jobs/${job.id}?tail=500`)
+        if (alive && r.ok) setLog((await r.json()).log_tail || '')
+      } catch { /* keep last */ }
+    }
+    poll()
+    const t = setInterval(poll, 10000)
+    return () => { alive = false; clearInterval(t) }
+  }, [job.id])
+
+  const done = []
+  let doneMinutes = 0
+  let current = null
+  for (const line of log.split('\n')) {
+    if (line.startsWith('=====')) {
+      current = line.replace(/=+/g, '').trim().replace(/ \(cap.*$/, '')
+    }
+    const m = line.match(/^\[(ok|FAIL|timeout)\] (.+?) \((\d+(?:\.\d+)?) min/)
+    if (m) { done.push(m[2].trim()); doneMinutes += parseFloat(m[3]) }
+  }
+  if (done.includes(current)) current = null
+
+  const est = Object.fromEntries(LAB_STEPS)
+  const totalEst = LAB_STEPS.reduce((s, [, e]) => s + e, 0)
+  const elapsedMin = (Date.now() - Date.parse(job.started_at)) / 60000
+  const isLab = job.type === 'overnight_lab'
+  let frac = null
+  if (isLab) {
+    const completedEst = done.reduce((s, d) => s + (est[d] ?? 5), 0)
+    const curEst = current ? (est[current] ?? 10) : 0
+    const curElapsed = Math.min(Math.max(0, elapsedMin - doneMinutes), 0.95 * curEst)
+    frac = Math.min(0.99, (completedEst + curElapsed) / totalEst)
+  }
+
+  return (
+    <div className="card">
+      <h3><span className="badge running">running</span> {job.label}</h3>
+      {frac != null ? (
+        <>
+          <div className="pbar-track">
+            <div className="pbar-fill" style={{ width: `${(frac * 100).toFixed(0)}%` }} />
+          </div>
+          <p className="hint" style={{ marginBottom: 0 }}>
+            {(frac * 100).toFixed(0)}% (rough estimate) · step {done.length + (current ? 1 : 0)}/{LAB_STEPS.length}:
+            {' '}<b>{current || 'finishing'}</b> · elapsed {(elapsedMin / 60).toFixed(1)}h ·
+            ~{(totalEst * (1 - frac) / 60).toFixed(1)}h remaining
+          </p>
+        </>
+      ) : (
+        <p className="hint" style={{ marginBottom: 0 }}>
+          running for {Math.round(elapsedMin)} min (no step estimates for this job type)
+        </p>
+      )}
+    </div>
+  )
+}
+
 export default function Execute({ apiUp }) {
   const [jobs, setJobs] = useState([])
   const [types, setTypes] = useState([
@@ -61,6 +131,10 @@ export default function Execute({ apiUp }) {
       <h1 className="page-title">Execute</h1>
       <p className="page-sub">Launch and monitor sweeps and validation from here — results land in the registry automatically.</p>
       {error && <div className="card"><span className="neg">{error}</span></div>}
+
+      {jobs.filter((j) => j.status === 'running').map((j) => (
+        <ProgressCard key={j.id} job={j} />
+      ))}
 
       <div className="tiles">
         {types.map((t) => (

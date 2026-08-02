@@ -150,7 +150,83 @@ def registry_overview() -> str:
     })
 
 
-TOOLS = [get_system_status, best_setups, walkforward_results, registry_overview]
+# step estimates (minutes) for the overnight lab — rough, for progress display
+LAB_STEPS = [
+    ("equity bronze/silver", 25), ("quality report", 10), ("MA megasweep", 45),
+    ("lab coarse", 60), ("scoring", 3), ("lab refine", 45),
+    ("walk-forward (candidates)", 40), ("equity curves", 15), ("web export", 3),
+]
+
+
+def _progress_text() -> str:
+    try:
+        with urllib.request.urlopen(f"{API}/api/jobs", timeout=5) as r:
+            jobs = json.loads(r.read())
+    except Exception:
+        return "portal API is not reachable"
+    running = [j for j in jobs if j["status"] == "running"]
+    if not running:
+        last = jobs[0] if jobs else None
+        return (f"no job running. last: {last['label']} -> {last['status']}"
+                if last else "no job running and none launched this session")
+    j = running[0]
+    try:
+        with urllib.request.urlopen(f"{API}/api/jobs/{j['id']}?tail=500",
+                                    timeout=5) as r:
+            log = json.loads(r.read()).get("log_tail", "")
+    except Exception:
+        log = ""
+
+    est = dict(LAB_STEPS)
+    total_est = sum(est.values())
+    done, done_minutes = [], 0.0
+    current = None
+    for line in log.splitlines():
+        if line.startswith("====="):
+            name = line.strip("= ").rsplit(" (cap", 1)[0].strip()
+            current = name
+        for pre in ("[ok] ", "[FAIL] ", "[timeout] "):
+            if line.startswith(pre):
+                name = line[len(pre):].rsplit(" (", 1)[0].strip()
+                done.append(name)
+                try:
+                    done_minutes += float(line.rsplit("(", 1)[1].split(" min")[0])
+                except Exception:
+                    pass
+    if current in done:
+        current = None
+    if not est or j["type"] != "overnight_lab":
+        started = datetime.fromisoformat(j["started_at"])
+        mins = (datetime.now(timezone.utc) - started).total_seconds() / 60
+        return f"{j['label']}: running for {mins:.0f} min (no step estimates)"
+
+    completed_est = sum(est.get(d, 5) for d in done)
+    started = datetime.fromisoformat(j["started_at"])
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds() / 60
+    cur_est = est.get(current, 10) if current else 0
+    cur_elapsed = min(max(0.0, elapsed - done_minutes), 0.95 * cur_est)
+    frac = min(0.99, (completed_est + cur_elapsed) / total_est)
+    remaining = max(1, total_est * (1 - frac))
+    bar = "#" * round(frac * 12)
+    step_n = len(done) + (1 if current else 0)
+    lines = [
+        j["label"],
+        f"[{bar:<12}] {frac * 100:.0f}% (rough estimate)",
+        f"step {step_n}/{len(LAB_STEPS)}: {current or 'finishing'}",
+        f"elapsed {elapsed / 60:.1f}h, ~{remaining / 60:.1f}h remaining",
+    ]
+    return "\n".join(lines)
+
+
+@beta_tool
+def job_progress() -> str:
+    """Progress of the currently running background job: percent complete,
+    current pipeline step, elapsed time, and rough time remaining."""
+    return _progress_text()
+
+
+TOOLS = [get_system_status, best_setups, walkforward_results,
+         registry_overview, job_progress]
 
 SYSTEM = """You are Specula's assistant on Telegram. Specula is a private \
 trading-strategy research system: a 1-minute bar data lake (top-20 crypto \
@@ -189,6 +265,8 @@ def send(text: str) -> None:
 # ------------------------------------------------------------------ handlers
 
 def handle_command(cmd: str) -> str:
+    if cmd.startswith("/progress"):
+        return _progress_text()
     if cmd.startswith("/status"):
         s = json.loads(get_system_status.call({}))
         lines = [f"API: {s.get('api')}"]
@@ -223,7 +301,7 @@ def handle_command(cmd: str) -> str:
             lines.append(f"- {r['symbol']}: PF {r['oos_pf']}, "
                          f"{r['oos_return_pct']}% over {r['oos_trades']} trades")
         return "\n".join(lines)
-    return ("Commands: /status /best [symbol] /wf [symbol] /help\n"
+    return ("Commands: /status /progress /best [symbol] /wf [symbol] /help\n"
             "Or just ask me anything about the system in plain language.")
 
 

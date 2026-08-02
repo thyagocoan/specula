@@ -42,6 +42,8 @@ def all_symbols() -> list[str]:
 
 
 def sweep_symbol(symbol: str) -> pd.DataFrame:
+    import gc
+
     import vectorbt as vbt
 
     df = frames(symbol, EXEC_TF)
@@ -65,55 +67,55 @@ def sweep_symbol(symbol: str) -> pd.DataFrame:
             fast_ma.wrapper.columns.get_level_values("fast_window"),
             slow_ma.wrapper.columns.get_level_values("slow_window"),
         ))
-        n_pairs = cross_up.shape[1]
-        n_ex = len(EXITS)
-        entries = np.tile(cross_up, n_ex)
-        short_entries = np.tile(cross_dn, n_ex)
-        exits = np.tile(cross_dn, n_ex)
-        short_exits = np.tile(cross_up, n_ex)
+        del fast_ma, slow_ma
+        entries, short_entries = cross_up, cross_dn
+        exits, short_exits = cross_dn, cross_up
         if eod is not None:
             entries = entries & ~late & ~eod
             short_entries = short_entries & ~late & ~eod
             exits = exits | eod
             short_exits = short_exits | eod
-        sl_row = np.repeat([e[0] for e in EXITS], n_pairs)[None, :]
-        tp_row = np.repeat([e[1] for e in EXITS], n_pairs)[None, :]
 
+        # one from_signals call per (fee, exit) keeps peak memory low:
+        # ~105 columns per pass instead of 420 tiled ones (the tiled version
+        # OOMed with 12 concurrent workers)
         for fee in fees:
-            pf = vbt.Portfolio.from_signals(
-                close=close,
-                entries=entries,
-                exits=exits,
-                short_entries=short_entries,
-                short_exits=short_exits,
-                open=df["open"],
-                high=df["high"],
-                low=df["low"],
-                sl_stop=sl_row,
-                tp_stop=tp_row,
-                fees=fee,
-                slippage=SLIPPAGE,
-                init_cash=INIT_CASH,
-                freq=EXEC_TF,
-            )
-            n = pf.trades.count()
-            pfac = pf.trades.profit_factor()
-            win = pf.trades.win_rate()
-            ret = pf.total_return()
-            dd = pf.max_drawdown()
-            for col in range(entries.shape[1]):
-                f, s = pairs[col % n_pairs]
-                sl, tp = EXITS[col // n_pairs]
-                rows.append({
-                    "symbol": symbol, "ma_type": ma_type,
-                    "fast": int(f), "slow": int(s),
-                    "sl": sl, "tp": tp, "fee": fee,
-                    "n_trades": int(n.iloc[col]),
-                    "profit_factor": float(pfac.iloc[col]) if pd.notna(pfac.iloc[col]) else None,
-                    "win_rate_pct": round(100 * float(win.iloc[col]), 1) if pd.notna(win.iloc[col]) else None,
-                    "total_return_pct": round(100 * float(ret.iloc[col]), 2),
-                    "max_dd_pct": round(100 * float(dd.iloc[col]), 2),
-                })
+            for sl, tp in EXITS:
+                pf = vbt.Portfolio.from_signals(
+                    close=close,
+                    entries=entries,
+                    exits=exits,
+                    short_entries=short_entries,
+                    short_exits=short_exits,
+                    open=df["open"],
+                    high=df["high"],
+                    low=df["low"],
+                    sl_stop=sl,
+                    tp_stop=tp,
+                    fees=fee,
+                    slippage=SLIPPAGE,
+                    init_cash=INIT_CASH,
+                    freq=EXEC_TF,
+                )
+                n = pf.trades.count()
+                pfac = pf.trades.profit_factor()
+                win = pf.trades.win_rate()
+                ret = pf.total_return()
+                dd = pf.max_drawdown()
+                for col in range(entries.shape[1]):
+                    f, s = pairs[col]
+                    rows.append({
+                        "symbol": symbol, "ma_type": ma_type,
+                        "fast": int(f), "slow": int(s),
+                        "sl": sl, "tp": tp, "fee": fee,
+                        "n_trades": int(n.iloc[col]),
+                        "profit_factor": float(pfac.iloc[col]) if pd.notna(pfac.iloc[col]) else None,
+                        "win_rate_pct": round(100 * float(win.iloc[col]), 1) if pd.notna(win.iloc[col]) else None,
+                        "total_return_pct": round(100 * float(ret.iloc[col]), 2),
+                        "max_dd_pct": round(100 * float(dd.iloc[col]), 2),
+                    })
+                del pf, n, pfac, win, ret, dd
+                gc.collect()
     out = pd.DataFrame(rows)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out.to_parquet(OUT_DIR / f"{symbol}.parquet")
@@ -179,7 +181,7 @@ def main() -> int:
         symbols = symbols[: args.limit]
 
     t0 = time.monotonic()
-    workers = max(1, (os.cpu_count() or 4) - 2)
+    workers = max(1, min(8, (os.cpu_count() or 4) - 2))  # memory-bound: cap at 8
     print(f"MA megasweep: {len(symbols)} symbols, "
           f"{len(WINDOWS) * (len(WINDOWS) - 1) // 2 * 2 * len(EXITS)} combos/symbol/fee, "
           f"{workers} workers", flush=True)
