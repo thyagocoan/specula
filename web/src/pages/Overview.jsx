@@ -106,7 +106,69 @@ function ReportPanel({ symbol, curves, days }) {
   )
 }
 
+function SetupCurve({ runId, days, onClose }) {
+  const [doc, setDoc] = useState(null)
+  const [err, setErr] = useState(null)
+
+  useEffect(() => {
+    setDoc(null)
+    setErr(null)
+    ;(async () => {
+      try {
+        const r = await fetch(`/api/curve/${runId}`)
+        if (!r.ok) throw new Error(`curve build failed (${r.status})`)
+        setDoc(await r.json())
+      } catch (e) {
+        setErr(String(e.message || e))
+      }
+    })()
+  }, [runId])
+
+  const strat = useMemo(() => slicedRebased(doc?.points, days), [doc, days])
+  const price = useMemo(() => slicedRebased(doc?.price, days), [doc, days])
+
+  return (
+    <div className="card">
+      <h3>
+        Setup P&L vs price
+        <button className="btn ghost" style={{ float: 'right' }}
+          onClick={onClose}>close</button>
+      </h3>
+      {err && <p className="hint">{err}</p>}
+      {!doc && !err && <p className="hint">building curve…</p>}
+      {doc && (
+        <>
+          <p className="hint" style={{ margin: '0 0 6px' }}>{doc.label}</p>
+          {!strat ? (
+            <p className="hint">no activity in the selected period</p>
+          ) : (
+            <>
+              <div style={{ marginBottom: 6 }}>
+                <span className="chip">
+                  <span className="dot" style={{ background: 'var(--series-1)' }} />
+                  setup P&L: <Ret v={100 * (strat[strat.length - 1].v - 1)} />
+                </span>
+                {price && (
+                  <span className="chip">
+                    <span className="dot" style={{ background: 'var(--series-2)' }} />
+                    price move: <Ret v={100 * (price[price.length - 1].v - 1)} />
+                  </span>
+                )}
+              </div>
+              <Line yLabel="relative to period start" height={260} series={[
+                { name: 'setup P&L', color: 'var(--series-1)', points: strat },
+                ...(price ? [{ name: 'price', color: 'var(--series-2)', points: price }] : []),
+              ]} />
+            </>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 function AssetReview({ symbol, runs, wf, curves, days }) {
+  const [selectedRun, setSelectedRun] = useState(null)
   const setups = useMemo(
     () => groupSetups(runs.filter((r) => r.symbol === symbol))
       .filter((s) => s.pf_low != null)
@@ -116,6 +178,7 @@ function AssetReview({ symbol, runs, wf, curves, days }) {
   )
   const wfDocs = (wf?.symbols || []).filter(
     (d) => d.symbol === symbol || d.symbol === `${symbol}·lab`)
+  const period = wfPeriod(wf, symbol, days)
 
   return (
     <>
@@ -143,10 +206,26 @@ function AssetReview({ symbol, runs, wf, curves, days }) {
         </div>
       )}
 
+      {period.trades != null && (
+        <div className="card">
+          <h3>Activity in the selected period (out-of-sample)</h3>
+          <p style={{ margin: 0 }}>
+            <b>{period.trades}</b> daytrades ·
+            P&L <Ret v={period.pnl} />
+          </p>
+        </div>
+      )}
+
       <ReportPanel symbol={symbol} curves={curves} days={days} />
 
+      {selectedRun && (
+        <SetupCurve runId={selectedRun} days={days}
+          onClose={() => setSelectedRun(null)} />
+      )}
+
       <div className="card">
-        <h3>Top strategies for {symbol} <span className="hint">(in-sample)</span></h3>
+        <h3>Top strategies for {symbol}{' '}
+          <span className="hint">(in-sample · click a row for its P&L-vs-price chart)</span></h3>
         <table className="grid">
           <thead>
             <tr>
@@ -155,17 +234,21 @@ function AssetReview({ symbol, runs, wf, curves, days }) {
             </tr>
           </thead>
           <tbody>
-            {setups.map((s) => (
-              <tr key={s.key}>
-                <td className="txt">{s.label}</td>
-                <td>{s.n_trades}</td>
-                <td>{num(s.win_rate, 1)}</td>
-                <td><Pf v={s.pf_low} /></td>
-                <td><Pf v={s.pf_high} /></td>
-                <td><Ret v={s.total_return} /></td>
-                <td>{num(s.max_dd, 1)}%</td>
-              </tr>
-            ))}
+            {setups.map((s) => {
+              const runId = s.byFee?.[s.fees?.[0]]?.run_id
+              return (
+                <tr key={s.key} className={runId ? 'selectable' : ''}
+                  onClick={() => runId && setSelectedRun(runId)}>
+                  <td className="txt">{s.label}</td>
+                  <td>{s.n_trades}</td>
+                  <td>{num(s.win_rate, 1)}</td>
+                  <td><Pf v={s.pf_low} /></td>
+                  <td><Pf v={s.pf_high} /></td>
+                  <td><Ret v={s.total_return} /></td>
+                  <td>{num(s.max_dd, 1)}%</td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -223,8 +306,14 @@ export default function Overview({ runs: allRuns, generatedAt, asset, setAsset }
     })
   }, [tabRuns, wf, days])
 
-  const sorted = useMemo(() => sortRows(rows, sort.col, sort.dir), [rows, sort])
-  const totTrades = rows.reduce((a, r) => a + (r.period_trades || 0), 0)
+  // with a time window selected, show only assets that actually triggered
+  const visible = useMemo(
+    () => (days == null ? rows : rows.filter((r) => (r.period_trades || 0) > 0)),
+    [rows, days],
+  )
+  const sorted = useMemo(() => sortRows(visible, sort.col, sort.dir),
+    [visible, sort])
+  const totTrades = visible.reduce((a, r) => a + (r.period_trades || 0), 0)
   const periodLabel = PERIODS.find(([id]) => id === period)?.[1]
 
   return (
@@ -250,7 +339,10 @@ export default function Overview({ runs: allRuns, generatedAt, asset, setAsset }
         <div className="tabs">
           {PERIODS.map(([id, label]) => (
             <button key={id} className={period === id ? 'active' : ''}
-              onClick={() => setPeriod(id)}>
+              onClick={() => {
+                setPeriod(id)
+                if (id !== 'all') setSort({ col: 'period_pnl', dir: 'desc' })
+              }}>
               {label}
             </button>
           ))}
@@ -271,9 +363,12 @@ export default function Overview({ runs: allRuns, generatedAt, asset, setAsset }
         <div className="card">
           <h3>Top setups — best per asset</h3>
           <p className="hint" style={{ marginTop: 0 }}>
-            {rows.length} assets with qualifying setups (≥30 trades) ·
-            out-of-sample daytrades {periodLabel.toLowerCase()}: <b>{totTrades.toLocaleString()}</b> ·
-            click a symbol for the full review · OOS columns follow the time filter
+            {days == null
+              ? `${visible.length} assets with qualifying setups (≥30 trades)`
+              : `${visible.length} assets triggered a setup in the last
+                 ${periodLabel.toLowerCase()} (of ${rows.length} tracked)`} ·
+            out-of-sample daytrades: <b>{totTrades.toLocaleString()}</b> ·
+            click a symbol for the full review
           </p>
           <table className="grid">
             <thead>

@@ -135,6 +135,39 @@ def get_job(job_id: str, tail: int = 100):
     return out
 
 
+_curve_cache: dict[str, dict] = {}
+
+
+@app.get("/api/curve/{run_id}")
+def get_curve(run_id: str):
+    """Daily equity + price curve for any logged run, built on demand."""
+    if run_id in _curve_cache:
+        return _curve_cache[run_id]
+    from specula.backtest import INIT_CASH, build_portfolio
+    from specula.sweeps import cfg_label
+
+    try:
+        cfg = runlog.get_cfg(run_id)
+    except KeyError:
+        raise HTTPException(404, f"run {run_id} not found")
+    pf = build_portfolio(cfg)
+    val = pf.value().resample("1D").last().dropna() / INIT_CASH
+    px = pf.close.dropna().resample("1D").last().dropna()
+    px = px / px.iloc[0]
+    doc = {
+        "run_id": run_id,
+        "label": cfg_label(cfg, with_fee=True),
+        "points": [{"t": str(t.date()), "v": round(float(v), 4)}
+                   for t, v in val.items()],
+        "price": [{"t": str(t.date()), "v": round(float(v), 4)}
+                  for t, v in px.items()],
+    }
+    if len(_curve_cache) > 60:
+        _curve_cache.pop(next(iter(_curve_cache)))
+    _curve_cache[run_id] = doc
+    return doc
+
+
 @app.get("/api/walkforward")
 def get_walkforward():
     if not WALKFORWARD_JSON.exists():
