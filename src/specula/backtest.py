@@ -35,6 +35,7 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
     exec_df = frames(cfg["symbol"], cfg["exec_tf"])
     n = len(exec_df)
     price = exec_df["close"].copy()
+    sl_trail = False
 
     if cfg["strategy"] == "fffd":
         sig_key = ("fffd", cfg["symbol"], cfg["setup_tf"], cfg["dev"], cfg["strict"])
@@ -53,6 +54,16 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
         if target in ("r1", "r2"):
             k = 1.0 if target == "r1" else 2.0
             tp_arr = sl_arr * k
+        elif target == "none":
+            pass  # structural stop only — used for MFE measurement
+        elif target == "trail":
+            sl_trail = True
+            dist = cfg["trail"]
+            if dist != "structural":
+                sl_arr = pd.Series(
+                    np.where(long_e | short_e, float(dist), np.nan),
+                    index=exec_df.index,
+                )
         else:
             long_band = mtf.map_to_exec(mid if target == "midband" else upper,
                                         cfg["setup_tf"], exec_df.index)
@@ -112,6 +123,7 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
         high=exec_df["high"],
         low=exec_df["low"],
         sl_stop=sl_stop,
+        sl_trail=sl_trail,
         tp_stop=tp_stop,
         fees=cfg["fee"],
         slippage=SLIPPAGE,
