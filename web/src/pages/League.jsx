@@ -154,6 +154,7 @@ function ScoreTable({ title, hint, rows, sort, setSort, isApproved, onAction, em
                 <Th id="hold_pf" sort={sort} setSort={setSort}>Holdout PF</Th>
                 <Th id="hold_trades" sort={sort} setSort={setSort}>Holdout trades</Th>
                 <Th id="hold_pnl_usd" sort={sort} setSort={setSort}>Holdout P&L $</Th>
+                <Th id="hold_sharpe" sort={sort} setSort={setSort}>Holdout Sharpe/tr</Th>
                 <Th id="hold_assets_pf_gt1" sort={sort} setSort={setSort}>Assets PF&gt;1</Th>
                 <Th id="post_pf" sort={sort} setSort={setSort}>Post-disc. PF</Th>
                 <Th id="first_seen" sort={sort} setSort={setSort} txt>First seen</Th>
@@ -173,6 +174,8 @@ function ScoreTable({ title, hint, rows, sort, setSort, isApproved, onAction, em
                   <td><Pf v={r.hold_pf} /></td>
                   <td>{r.hold_trades}</td>
                   <td><Money v={r.hold_pnl_usd} /></td>
+                  <td>{r.hold_sharpe != null ? num(r.hold_sharpe, 2)
+                    : <span className="hint" title="fills in on the next evaluation round">—</span>}</td>
                   <td>{r.hold_assets_pf_gt1}/{r.hold_assets}</td>
                   <td title={r.post_trades ? `${r.post_trades} trades since discovery` : 'no data newer than discovery yet'}>
                     <Pf v={r.post_pf} /></td>

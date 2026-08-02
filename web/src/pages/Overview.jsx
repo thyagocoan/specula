@@ -460,7 +460,7 @@ function StrategyBoard({ sig, label, runs, onBack, onAsset }) {
   )
 }
 
-function AssetReview({ symbol, runs, wf, days, favs, toggleFav }) {
+function AssetReview({ symbol, runs, days, favs, toggleFav, onOpenBoard }) {
   const [selectedRun, setSelectedRun] = useState(null)
   const [runTrades, setRunTrades] = useState({})
   const fetched = useRef(new Set())
@@ -474,8 +474,12 @@ function AssetReview({ symbol, runs, wf, days, favs, toggleFav }) {
     const isFav = (s) => favSigs.has(strategySig(s.runs[0]))
     return [...all.filter(isFav), ...all.filter((s) => !isFav(s)).slice(0, 15)]
   }, [runs, symbol, favs])
-  const wfDocs = (wf?.symbols || []).filter(
-    (d) => d.symbol === symbol || d.symbol === `${symbol}·lab`)
+
+  // favourite/approved setups matched onto THIS asset (one row each)
+  const favRows = useMemo(() => favs.map((f) => ({
+    fav: f,
+    g: setups.find((s) => strategySig(s.runs[0]) === f.sig) ?? null,
+  })), [favs, setups])
 
   // the setup curves/journal treat as this asset's best (top PF, ≥30 trades)
   const favKey = useMemo(() => {
@@ -537,27 +541,77 @@ function AssetReview({ symbol, runs, wf, days, favs, toggleFav }) {
 
   return (
     <>
-      {wfDocs.length > 0 && (
+      {favRows.length > 0 && (
         <div className="card">
-          <h3>Out-of-sample verdict (walk-forward) — the numbers that count</h3>
-          <table className="grid">
-            <thead>
-              <tr><th className="txt">Source</th><th>Fee/side</th><th>OOS trades</th>
-                <th>OOS PF</th><th>Win %</th><th>OOS return</th></tr>
-            </thead>
-            <tbody>
-              {wfDocs.flatMap((d) => d.scenarios.map((s) => (
-                <tr key={d.symbol + s.fee}>
-                  <td className="txt">{d.symbol.endsWith('·lab') ? 'lab strategies' : 'core grid'}</td>
-                  <td>{(s.fee * 100).toFixed(2)}%</td>
-                  <td>{s.aggregate.oos_trades}</td>
-                  <td><Pf v={s.aggregate.oos_pf} /></td>
-                  <td>{num(s.aggregate.oos_win_rate_pct, 1)}</td>
-                  <td><Ret v={s.aggregate.oos_return_pct} /></td>
+          <h3>Favourite &amp; approved setups on {symbol}{' '}
+            <span className="hint">(click a row for its chart · period columns
+              follow the time filter)</span></h3>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="grid">
+              <thead>
+                <tr>
+                  <th className="txt">Setup</th><th>Trades</th><th>Wins</th>
+                  <th>Win %</th><th>PF @low fee</th><th>PF @high fee</th>
+                  <th>Return</th><th>Max DD</th><th>Sharpe</th>
+                  <th>Trades ({periodLabel})</th><th>P&L $ ({periodLabel})</th>
+                  <th />
                 </tr>
-              )))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {favRows.map(({ fav, g }) => {
+                  if (!g) {
+                    return (
+                      <tr key={fav.sig}>
+                        <td className="txt">
+                          {fav.status === 'approved' ? '✅' : '★'} {fav.label}
+                        </td>
+                        <td className="txt hint" colSpan={10}>
+                          no logged run on this asset yet — a league/explorer
+                          round fills it in
+                        </td>
+                        <td />
+                      </tr>
+                    )
+                  }
+                  const runId = g.byFee?.[g.fees?.[0]]?.run_id
+                  const tr = runTrades[runId]
+                  let pn = null, pPnl = null
+                  if (tr) {
+                    const win = (days != null && refT)
+                      ? tr.filter((t) => Date.parse(t.entry_ts) >= refT - days * 86400e3)
+                      : tr
+                    pn = win.length
+                    pPnl = win.reduce((a, t) => a + (t.pnl_usd || 0), 0)
+                  }
+                  return (
+                    <tr key={fav.sig} className={runId ? 'selectable' : ''}
+                      onClick={() => runId && setSelectedRun(runId)}>
+                      <td className="txt">
+                        {fav.status === 'approved' ? '✅' : '★'} {g.label}
+                      </td>
+                      <td>{g.n_trades}</td>
+                      <td>{g.wins ?? '—'}</td>
+                      <td>{num(g.win_rate, 1)}</td>
+                      <td><Pf v={g.pf_low} /></td>
+                      <td><Pf v={g.pf_high} /></td>
+                      <td><Ret v={g.total_return} /></td>
+                      <td>{num(g.max_dd, 1)}%</td>
+                      <td>{num(g.sharpe, 2)}</td>
+                      <td>{tr ? pn : <span className="hint">…</span>}</td>
+                      <td>{tr ? <Money v={pPnl} /> : <span className="hint">…</span>}</td>
+                      <td>
+                        <button className="btn ghost"
+                          title="compare this setup across every asset"
+                          onClick={(e) => { e.stopPropagation(); onOpenBoard(fav) }}>
+                          all assets
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -746,10 +800,8 @@ export default function Overview({ runs: allRuns, generatedAt, asset, setAsset }
               ← all assets
             </button>
           </p>
-          <FavStrip favs={favs} onOpen={setBoard}
-            onRemove={(sig) => toggleFav(sig)} />
-          <AssetReview symbol={asset} runs={tabRuns} wf={wf} days={days}
-            favs={favs} toggleFav={toggleFav} />
+          <AssetReview symbol={asset} runs={tabRuns} days={days}
+            favs={favs} toggleFav={toggleFav} onOpenBoard={setBoard} />
         </>
       ) : (
         <>

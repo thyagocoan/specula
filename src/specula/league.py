@@ -86,6 +86,19 @@ def pooled_pf(pnls: list[float]) -> float | None:
     return wins / losses
 
 
+def trade_sharpe(pnls: list[float]) -> float | None:
+    """Per-trade Sharpe (mean/σ of trade P&Ls) — a risk-adjusted tiebreaker
+    that PF hides: two configs with equal PF can have very different
+    variance per trade."""
+    if len(pnls) < 2:
+        return None
+    m = sum(pnls) / len(pnls)
+    var = sum((x - m) ** 2 for x in pnls) / (len(pnls) - 1)
+    if var <= 0:
+        return None
+    return round(m / var ** 0.5, 3)
+
+
 def evaluate(configs: list[dict], holdout_days: int = 60,
              symbols: list[str] | None = None, workers: int | None = None,
              first_seen_map: dict[str, str] | None = None,
@@ -164,9 +177,11 @@ def evaluate(configs: list[dict], holdout_days: int = 60,
             "train_trades": len(train),
             "train_pf": pooled_pf(train),
             "train_pnl_usd": round(sum(train), 2),
+            "train_sharpe": trade_sharpe(train),
             "hold_trades": len(hold),
             "hold_pf": pooled_pf(hold),
             "hold_pnl_usd": round(sum(hold), 2),
+            "hold_sharpe": trade_sharpe(hold),
             "hold_assets": len(hold_assets),
             "hold_assets_pf_gt1": len(good),
         }
