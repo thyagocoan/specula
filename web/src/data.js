@@ -217,3 +217,18 @@ export function uniqueSorted(arr) {
 }
 
 export const isCrypto = (symbol) => /USD[TC]$/.test(symbol)
+
+let _sectors = null
+export async function loadSectors() {
+  if (_sectors) return _sectors
+  try {
+    const r = await fetch('/api/sectors')
+    _sectors = r.ok ? await r.json() : {}
+  } catch {
+    _sectors = {}
+  }
+  return _sectors
+}
+
+export const sectorOf = (map, symbol) =>
+  isCrypto(symbol) ? 'Crypto' : (map?.[symbol] || 'Other')

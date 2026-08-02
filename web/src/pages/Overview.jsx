@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import CandleChart from '../components/CandleChart.jsx'
 import { Pf, Ret, Th, sortRows } from '../components/bits.jsx'
-import { groupSetups, isCrypto, num, strategyParams, strategySig, useFavStrategies } from '../data.js'
+import { groupSetups, isCrypto, loadSectors, num, sectorOf, strategyParams, strategySig, useFavStrategies } from '../data.js'
 
 const TABS = [
   ['all', 'All'],
@@ -401,6 +401,8 @@ function FavStrip({ favs, onOpen, onRemove }) {
 // one favourite strategy applied to every asset that has a logged run for it
 function StrategyBoard({ sig, label, runs, onBack, onAsset }) {
   const [sort, setSort] = useState({ col: 'pf_low', dir: 'desc' })
+  const [sectors, setSectors] = useState({})
+  useEffect(() => { loadSectors().then(setSectors) }, [])
   const rows = useMemo(() => {
     const groups = groupSetups(runs.filter((r) => strategySig(r) === sig))
     const bySym = new Map()
@@ -408,8 +410,22 @@ function StrategyBoard({ sig, label, runs, onBack, onAsset }) {
       const prev = bySym.get(g.symbol)
       if (!prev || (g.pf_low ?? -1) > (prev.pf_low ?? -1)) bySym.set(g.symbol, g)
     }
-    return [...bySym.values()]
-  }, [runs, sig])
+    return [...bySym.values()].map((g) => ({
+      ...g, sector: sectorOf(sectors, g.symbol),
+    }))
+  }, [runs, sig, sectors])
+
+  // does the setup fail anywhere systematically? per-sector hit rate
+  const sectorStats = useMemo(() => {
+    const agg = new Map()
+    for (const r of rows) {
+      const s = agg.get(r.sector) || { n: 0, good: 0 }
+      s.n += 1
+      if ((r.pf_low ?? 0) > 1) s.good += 1
+      agg.set(r.sector, s)
+    }
+    return [...agg.entries()].sort((a, b) => b[1].n - a[1].n)
+  }, [rows])
   const sorted = useMemo(() => sortRows(rows, sort.col, sort.dir), [rows, sort])
   const winners = rows.filter((r) => (r.pf_low ?? 0) > 1).length
 
@@ -426,10 +442,16 @@ function StrategyBoard({ sig, label, runs, onBack, onAsset }) {
           exact setup · in-sample numbers — check the asset's walk-forward
           verdict before trusting it · click a row for the full asset review
         </p>
+        <p className="hint" style={{ marginTop: 0 }}>
+          by sector:{' '}
+          {sectorStats.map(([s, v]) =>
+            `${s} ${v.good}/${v.n}`).join(' · ')}
+        </p>
         <table className="grid">
           <thead>
             <tr>
               <Th id="symbol" sort={sort} setSort={setSort} txt>Asset</Th>
+              <Th id="sector" sort={sort} setSort={setSort} txt>Sector</Th>
               <Th id="n_trades" sort={sort} setSort={setSort}>Trades</Th>
               <Th id="win_rate" sort={sort} setSort={setSort}>Win %</Th>
               <Th id="pf_low" sort={sort} setSort={setSort}>PF @low fee</Th>
@@ -444,6 +466,7 @@ function StrategyBoard({ sig, label, runs, onBack, onAsset }) {
               <tr key={s.symbol} className="selectable"
                 onClick={() => onAsset(s.symbol)}>
                 <td className="txt"><b>{s.symbol}</b></td>
+                <td className="txt hint">{s.sector}</td>
                 <td>{s.n_trades}</td>
                 <td>{num(s.win_rate, 1)}</td>
                 <td><Pf v={s.pf_low} /></td>

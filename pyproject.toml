@@ -17,6 +17,7 @@ dependencies = [
     "uvicorn>=0.30",
     "anthropic>=0.116",
     "apscheduler>=3.10",
+    "lxml>=6.1.1",
 ]
 
 [dependency-groups]

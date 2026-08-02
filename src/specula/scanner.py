@@ -20,8 +20,11 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
+
+NY = ZoneInfo("America/New_York")
 
 from specula import mtf, paper, runlog
 from specula.data import is_equity, resample_ohlcv
@@ -78,7 +81,7 @@ def stock_bars(symbol: str) -> pd.DataFrame | None:
     if not key or not sec:
         return None
     end = datetime.now(timezone.utc) - pd.Timedelta(minutes=16)
-    start = end - pd.Timedelta(days=4)
+    start = end - pd.Timedelta(days=8)  # enough for SMA20 on a 1h setup TF
     params = urllib.parse.urlencode({
         "symbols": symbol, "timeframe": "1Min",
         "start": start.isoformat().replace("+00:00", "Z"),
@@ -152,6 +155,24 @@ def latest_setup_signal(cfg: dict, bars_1m: pd.DataFrame):
             None if stop is None else float(stop), str(ts))
 
 
+def band_exit_level(cfg: dict, bars_1m: pd.DataFrame, side: str) -> float | None:
+    """Live Bollinger exit level for fffd band targets, from the last
+    COMPLETED setup bar (the live bar is still forming)."""
+    setup_df = resample_ohlcv(bars_1m, cfg["setup_tf"])
+    close = setup_df["close"]
+    if len(close) < 22:
+        return None
+    mid = close.rolling(20).mean()
+    if cfg.get("target") == "midband":
+        band = mid
+    else:  # target "upper": long exits at upper band, short at lower
+        sd = close.rolling(20).std(ddof=0)
+        dev = cfg.get("dev", 2.0)
+        band = mid + dev * sd if side == "long" else mid - dev * sd
+    val = band.iloc[-2]
+    return None if pd.isna(val) else float(val)
+
+
 def scan_once(send) -> None:
     state = _load_state()
     roster = [r for r in runlog.autotrade_list() if r["enabled"]]
@@ -182,6 +203,21 @@ def scan_once(send) -> None:
                         hit = (pos["sl"], "stop-loss")
                     elif pos["tp"] and price <= pos["tp"]:
                         hit = (pos["tp"], "take-profit")
+                # fffd band targets have no fixed tp — track the live band
+                cfgp = pos.get("cfg") or {}
+                if (hit is None and cfgp.get("strategy") == "fffd"
+                        and cfgp.get("target") in ("midband", "upper")):
+                    lvl = band_exit_level(cfgp, bars, pos["side"])
+                    if lvl is not None:
+                        if pos["side"] == "long" and price >= lvl:
+                            hit = (lvl, "band-target")
+                        elif pos["side"] == "short" and price <= lvl:
+                            hit = (lvl, "band-target")
+                # intraday only: stocks go flat before the close
+                if hit is None and is_equity(symbol):
+                    ny = datetime.now(NY)
+                    if (ny.hour == 15 and ny.minute >= 55) or ny.hour >= 16:
+                        hit = (price, "eod-flat")
                 if hit:
                     closed = paper.close_position(pos["id"], hit[0], hit[1])
                     if closed:
@@ -222,6 +258,12 @@ def scan_once(send) -> None:
             if armed and armed["ts"] == sig_ts and not sym_state.get(
                     f"fired_{sig_ts}"):
                 crossed = (price > trigger if side == "long" else price < trigger)
+                if crossed and is_equity(symbol):
+                    # no fresh entries near the close (mirror the backtest's
+                    # 15:45 cutoff; live stock data runs ~15 min delayed)
+                    ny = datetime.now(NY)
+                    if (ny.hour == 15 and ny.minute >= 30) or ny.hour >= 16:
+                        crossed = False
                 if crossed:
                     sym_state[f"fired_{sig_ts}"] = True
                     block = paper.risk_check()

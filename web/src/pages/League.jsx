@@ -252,6 +252,19 @@ export default function League() {
       : { ok: false, text: d?.detail || 'launch failed (another job running?)' })
   }
 
+  async function syncRoster() {
+    setMsg(null)
+    const r = await fetch('/api/autotrade/sync_approved', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ per_setup: 10 }),
+    })
+    const d = await r.json().catch(() => ({}))
+    setMsg(r.ok
+      ? { ok: true, text: `scanner roster updated: ${d.note} — paper trading starts on the next scan cycle (kill switch: /pause)` }
+      : { ok: false, text: d?.detail || 'sync failed' })
+  }
+
   const approvedSigs = useMemo(
     () => new Set(favs.filter((f) => f.status === 'approved').map((f) => f.sig)),
     [favs])
@@ -302,6 +315,10 @@ export default function League() {
           ))}
         </div>
         <button className="btn" onClick={launch}>Run the league now</button>
+        <button className="btn" onClick={syncRoster}
+          title="each approved setup's top-10 league assets go onto the scanner roster (best setup kept when symbols collide) — the scanner then paper-trades them live">
+          Send approved to scanner ▶
+        </button>
       </div>
 
       <ExplorerCard />

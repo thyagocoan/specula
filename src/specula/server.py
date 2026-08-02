@@ -471,6 +471,59 @@ def get_journal(limit_symbols: int = 20, sig: str | None = None):
     return doc
 
 
+class RosterSync(BaseModel):
+    per_setup: int = 10
+
+
+@app.post("/api/autotrade/sync_approved")
+def sync_approved(u: RosterSync):
+    """Fill the scanner roster from the approved setups: each approved
+    setup's top-N league assets, best setup kept when symbols collide
+    (the roster is one config per symbol)."""
+    from specula.sweeps import strategy_sig
+
+    approved = [f for f in runlog.fav_setups_list()
+                if f["status"] == "approved" and f["params"]]
+    if not approved:
+        raise HTTPException(400, "no approved setups — approve on the "
+                                 "Setups page first")
+    df = runlog.load()
+    df = df[(df["sweep_tag"] == "setup-league-v1")
+            & df["profit_factor"].notna()]
+    want = {f["sig"]: f for f in approved}
+    best: dict[str, tuple[float, dict, str]] = {}
+    matched = 0
+    for r in df.to_dict("records"):
+        params = json.loads(r["params"])
+        rsig = strategy_sig(params)
+        if rsig not in want or (r["n_trades"] or 0) < 5:
+            continue
+        matched += 1
+        pf = float(r["profit_factor"])
+        if not math.isfinite(pf):
+            continue
+        prev = best.get(r["symbol"])
+        if not prev or pf > prev[0]:
+            best[r["symbol"]] = (pf, params, want[rsig]["label"])
+    # keep each setup's strongest assets, cap per setup
+    per_setup: dict[str, list] = {}
+    for sym, (pf, params, label) in best.items():
+        per_setup.setdefault(label, []).append((pf, sym, params))
+    enabled = []
+    for label, rows in per_setup.items():
+        rows.sort(reverse=True)
+        for pf, sym, params in rows[:u.per_setup]:
+            runlog.autotrade_set(sym, True, cfg=params)
+            enabled.append({"symbol": sym, "setup": label,
+                            "pf": round(pf, 2)})
+    if not enabled:
+        raise HTTPException(404, "no league registry rows for the approved "
+                                 "setups — run the league first")
+    return {"ok": True, "enabled": sorted(enabled, key=lambda x: x["symbol"]),
+            "note": f"{len(enabled)} symbols on the roster "
+                    f"({matched} league rows matched)"}
+
+
 class FavSetupUpdate(BaseModel):
     sig: str
     label: str | None = None
@@ -496,6 +549,15 @@ def post_favsetups(u: FavSetupUpdate):
 
 LEAGUE_JSON = Path("data/meta/setup_league.json")
 EXPLORER_STATE = Path("data/meta/explorer_state.json")
+SECTORS_JSON = Path("data/meta/sectors.json")
+
+
+@app.get("/api/sectors")
+def get_sectors():
+    """symbol -> GICS sector map (scripts/build_sectors.py refreshes it)."""
+    if not SECTORS_JSON.exists():
+        return {}
+    return json.loads(SECTORS_JSON.read_text(encoding="utf-8"))
 
 
 @app.get("/api/league")

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Line from '../components/Line.jsx'
 import { Pf, Ret } from '../components/bits.jsx'
-import { num } from '../data.js'
+import { loadSectors, num, sectorOf } from '../data.js'
 
 // every trade displays and groups in ITS market's local time:
 // New York for stocks, UTC for crypto
@@ -126,8 +126,10 @@ export default function Journal() {
   const [split, setSplit] = useState(1)
   const [showAll, setShowAll] = useState(false)
   const [fees, setFees] = useState({ stock: 0.035, crypto: 0.10 })
+  const [sectors, setSectors] = useState({})
 
   useEffect(() => {
+    loadSectors().then(setSectors)
     ;(async () => {
       try {
         const r = await fetch('/api/settings')
@@ -192,9 +194,11 @@ export default function Journal() {
     }
 
     const start = Number(startAmt) > 0 ? Number(startAmt) : 1000
-    let open = [] // {exit_ms, size(committed), pnl}
+    let open = [] // {exit_ms, size(committed), pnl, sym}
     let skippedTotal = 0
     let cash = start
+    let peakCapSeen = 0
+    let peakSectors = []
     const trades = source.map((t0) => {
       const t = { ...t0 }
       const entryMs = Date.parse(t.entry_ts)
@@ -227,7 +231,7 @@ export default function Journal() {
         cash -= desired
         open.push({
           exit_ms: t.exit_ts ? Date.parse(t.exit_ts) : Infinity,
-          size: desired, pnl: t._pnl || 0,
+          size: desired, pnl: t._pnl || 0, sym: t.symbol,
         })
       } else {
         if (cap > 0 && open.length >= cap) {
@@ -239,11 +243,20 @@ export default function Journal() {
         t._pnl = t.pnl_usd
         open.push({
           exit_ms: t.exit_ts ? Date.parse(t.exit_ts) : Infinity,
-          size: t.size_usd, pnl: 0,
+          size: t.size_usd, pnl: 0, sym: t.symbol,
         })
       }
       t._concurrent = open.length
       t._capital = open.reduce((a, o) => a + o.size, 0)
+      if (t._capital > peakCapSeen) {
+        peakCapSeen = t._capital
+        const counts = new Map()
+        for (const o of open) {
+          const sec = sectorOf(sectors, o.sym)
+          counts.set(sec, (counts.get(sec) || 0) + 1)
+        }
+        peakSectors = [...counts.entries()].sort((a, b) => b[1] - a[1])
+      }
       return t
     })
 
@@ -315,8 +328,9 @@ export default function Journal() {
       taken: trades.length - skippedTotal,
       maxConc: Math.max(0, ...asc.map((w) => w.maxConc)),
       peakCap: Math.max(0, ...asc.map((w) => w.peakCap)),
+      peakSectors,
     }
-  }, [doc, cls, cap, weeksWin, mode, startAmt, split, fees])
+  }, [doc, cls, cap, weeksWin, mode, startAmt, split, fees, sectors])
 
   if (err) return <div className="card"><span className="neg">{err}</span></div>
   if (approved != null && approved.length === 0) {
@@ -442,6 +456,16 @@ export default function Journal() {
           <Money v={model.final - model.seed} />{' '}
           (<Ret v={model.seed ? 100 * (model.final / model.seed - 1) : null} />)
         </p>
+        {model.peakSectors.length > 0 && (
+          <p className="hint" style={{ marginBottom: 0 }}>
+            at the capital peak you were holding:{' '}
+            {model.peakSectors.map(([s, n]) => `${s} ×${n}`).join(' · ')}
+            {model.peakSectors[0][1] > 2 && (
+              <span className="neg"> — concentrated in one sector: those
+                positions are one correlated bet, not diversification</span>
+            )}
+          </p>
+        )}
         {mode === 'capital' && (
           <p className="hint" style={{ marginBottom: 0 }}>
             each trade stakes 1/{split} of the account; a signal only opens
