@@ -154,7 +154,7 @@ def vwap(exec_df: pd.DataFrame, symbol: str, mode: str, band_k: float = 1.5,
 
 def fffd_ff(setup_df: pd.DataFrame, exec_df: pd.DataFrame, symbol: str,
             setup_tf: str, dev: float = 2.0, wait_bars: int = 3,
-            vol_mult: float = 0.0, window: int = 20):
+            vol_mult: float = 0.0, tol: float = 0.0, window: int = 20):
     """Anticipated FFFD: arm on the setup-TF candle that CLOSES OUTSIDE the
     band ("fechou fora") — optionally only on elevated volume — then watch
     the first `wait_bars` exec bars after its close. If none violates the FF
@@ -194,16 +194,19 @@ def fffd_ff(setup_df: pd.DataFrame, exec_df: pd.DataFrame, symbol: str,
             p = a + wait_bars - 1
             if a >= n or p >= n or day[a] != day[p]:
                 continue  # window must complete inside one session
+            # tol: a marginal poke past the FF extreme (as a fraction of it)
+            # does not invalidate; the stop moves to the tolerated level
+            lim = ext * (1 + tol) if is_short else ext * (1 - tol)
             if is_short:
-                if high[a:p + 1].max() > ext:
+                if high[a:p + 1].max() > lim:
                     continue  # FF high taken out — arm invalidated
                 short_e[p] = True
-                dist = (ext - ex_close[p]) / ex_close[p]
+                dist = (lim - ex_close[p]) / ex_close[p]
             else:
-                if low[a:p + 1].min() < ext:
+                if low[a:p + 1].min() < lim:
                     continue
                 long_e[p] = True
-                dist = (ex_close[p] - ext) / ex_close[p]
+                dist = (ex_close[p] - lim) / ex_close[p]
             sl[p] = max(dist, 0.001)
 
     scan(ff_short, setup_df["high"].to_numpy(), True)
@@ -341,7 +344,7 @@ def generate(entry: dict, symbol: str, setup_tf: str, exec_tf: str):
     if kind == "fffd_ff":
         return fffd_ff(setup_df, exec_df, symbol, setup_tf,
                        entry.get("dev", 2.0), entry.get("wait_bars", 3),
-                       entry.get("vol_mult", 0.0))
+                       entry.get("vol_mult", 0.0), entry.get("tol", 0.0))
     if kind == "didi":
         return didi(setup_df, exec_df, setup_tf,
                     entry.get("tol_bars", 1), entry.get("adx_filter", False))

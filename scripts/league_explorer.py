@@ -52,7 +52,8 @@ def rand_entry(rng: random.Random) -> dict:
     if kind == "fffd_ff":
         return {"kind": kind, "dev": rng.choice([2.0, 2.5]),
                 "wait_bars": rng.choice([2, 3, 6]),
-                "vol_mult": rng.choice([0.0, 1.5, 2.0])}
+                "vol_mult": rng.choice([0.0, 1.5, 2.0]),
+                "tol": rng.choice([0.0, 0.0005, 0.001])}
     if kind == "ma_cross":
         f = rng.choice(MA_FAST)
         s = rng.choice([x for x in MA_SLOW if x > f])
