@@ -21,6 +21,7 @@ from numba import njit
 from specula import mtf
 from specula.data import is_equity
 from specula.features import wilder_rsi
+from specula.indicators import bollinger
 
 
 def _events_to_exec(event_index: pd.DatetimeIndex, setup_tf: str,
@@ -149,6 +150,68 @@ def vwap(exec_df: pd.DataFrame, symbol: str, mode: str, band_k: float = 1.5,
     return long_e, short_e, None
 
 
+# ------------------------------------------------------------------ fffd_ff
+
+def fffd_ff(setup_df: pd.DataFrame, exec_df: pd.DataFrame, symbol: str,
+            setup_tf: str, dev: float = 2.0, wait_bars: int = 3,
+            vol_mult: float = 0.0, window: int = 20):
+    """Anticipated FFFD: arm on the setup-TF candle that CLOSES OUTSIDE the
+    band ("fechou fora") — optionally only on elevated volume — then watch
+    the first `wait_bars` exec bars after its close. If none violates the FF
+    candle's extreme, enter at the close of that window (fading the
+    exhaustion before the classic fechou-dentro confirmation); a violation
+    cancels the arm. Longs mirror on the lower band.
+
+    Returns (long_e, short_e, price_hint=None, sl_hint) where sl_hint is the
+    per-entry structural distance entry→FF-extreme, usable as a trailing
+    stop distance (exit kind "trail", sl "structural").
+    """
+    close = setup_df["close"]
+    lower, mid, upper = bollinger(close, window, dev)
+    if vol_mult > 0:
+        vol = setup_df["volume"]
+        vol_ok = (vol >= vol_mult * vol.rolling(window).mean()).fillna(False)
+    else:
+        vol_ok = pd.Series(True, index=setup_df.index)
+    ff_short = ((close > upper).fillna(False) & vol_ok).to_numpy()
+    ff_long = ((close < lower).fillna(False) & vol_ok).to_numpy()
+
+    idx = exec_df.index
+    n = len(idx)
+    high = exec_df["high"].to_numpy()
+    low = exec_df["low"].to_numpy()
+    ex_close = exec_df["close"].to_numpy()
+    day = pd.factorize(_day_key(idx, symbol))[0]
+
+    long_e = np.zeros(n, bool)
+    short_e = np.zeros(n, bool)
+    sl = np.full(n, np.nan)
+
+    def scan(mask, extreme, is_short):
+        ts = setup_df.index[mask]
+        acts = mtf.activation_positions(ts, setup_tf, idx)
+        for a, ext in zip(acts, extreme[mask]):
+            p = a + wait_bars - 1
+            if a >= n or p >= n or day[a] != day[p]:
+                continue  # window must complete inside one session
+            if is_short:
+                if high[a:p + 1].max() > ext:
+                    continue  # FF high taken out — arm invalidated
+                short_e[p] = True
+                dist = (ext - ex_close[p]) / ex_close[p]
+            else:
+                if low[a:p + 1].min() < ext:
+                    continue
+                long_e[p] = True
+                dist = (ex_close[p] - ext) / ex_close[p]
+            sl[p] = max(dist, 0.001)
+
+    scan(ff_short, setup_df["high"].to_numpy(), True)
+    scan(ff_long, setup_df["low"].to_numpy(), False)
+    return (pd.Series(long_e, index=idx), pd.Series(short_e, index=idx),
+            None, pd.Series(sl, index=idx))
+
+
 # ------------------------------------------------------- explorer families
 
 def donchian(setup_df: pd.DataFrame, exec_index: pd.DatetimeIndex,
@@ -275,6 +338,10 @@ def generate(entry: dict, symbol: str, setup_tf: str, exec_tf: str):
     if kind == "mom":
         return mom(setup_df, exec_df.index, setup_tf,
                    entry.get("window", 10), entry.get("thr", 0.01))
+    if kind == "fffd_ff":
+        return fffd_ff(setup_df, exec_df, symbol, setup_tf,
+                       entry.get("dev", 2.0), entry.get("wait_bars", 3),
+                       entry.get("vol_mult", 0.0))
     if kind == "didi":
         return didi(setup_df, exec_df, setup_tf,
                     entry.get("tol_bars", 1), entry.get("adx_filter", False))

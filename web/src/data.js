@@ -136,7 +136,7 @@ export function setupLabel(run) {
     const NAMES = {
       ma_cross: 'MA cross', orb: 'Opening range', vwap: 'VWAP',
       rsi_cross: 'RSI cross', donchian: 'Donchian', boll: 'Bollinger',
-      macd: 'MACD', mom: 'Momentum',
+      macd: 'MACD', mom: 'Momentum', fffd_ff: 'FFFD anticipated',
     }
     const bits = [`${NAMES[entry.kind] || entry.kind || '?'} ${run.setup_tf}→${run.exec_tf}`]
     for (const [k, v] of Object.entries(entry)) {

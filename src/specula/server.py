@@ -287,7 +287,8 @@ def _run_trades(run_id: str) -> list[dict]:
     bar_sec = int(pd.Timedelta(cfg.get("exec_tf", "1min")).total_seconds())
     entry_fill = ("close" if cfg.get("strategy") == "lab"
                   and cfg.get("entry", {}).get("kind") in
-                  ("ma_cross", "vwap", "rsi_cross") else "intrabar")
+                  ("ma_cross", "vwap", "rsi_cross", "donchian", "boll",
+                   "macd", "mom", "fffd_ff") else "intrabar")
     crypto = sym.endswith(("USDT", "USDC"))
     size = (s["trade_size_crypto_usd"] if crypto
             else s["trade_size_stock_usd"]) or 1000

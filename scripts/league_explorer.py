@@ -48,7 +48,11 @@ MA_SLOW = [21, 34, 55, 89, 144, 200]
 
 def rand_entry(rng: random.Random) -> dict:
     kind = rng.choice(["ma_cross", "donchian", "boll", "macd", "mom",
-                       "vwap", "orb", "rsi_cross"])
+                       "vwap", "orb", "rsi_cross", "fffd_ff"])
+    if kind == "fffd_ff":
+        return {"kind": kind, "dev": rng.choice([2.0, 2.5]),
+                "wait_bars": rng.choice([2, 3, 6]),
+                "vol_mult": rng.choice([0.0, 1.5, 2.0])}
     if kind == "ma_cross":
         f = rng.choice(MA_FAST)
         s = rng.choice([x for x in MA_SLOW if x > f])
@@ -82,6 +86,10 @@ def rand_config(rng: random.Random) -> dict:
         entry = rand_entry(rng)
         if entry["kind"] in ("vwap", "orb"):  # exec-frame signals
             setup_tf = exec_tf
+        elif entry["kind"] == "fffd_ff":  # needs a fast exec under the FF TF
+            setup_tf, exec_tf = rng.choice([
+                ("1h", "5min"), ("1h", "15min"),
+                ("30min", "5min"), ("2h", "15min")])
         return {"strategy": "lab", "setup_tf": setup_tf, "exec_tf": exec_tf,
                 "entry": entry, "exit": copy.deepcopy(rng.choice(EXITS))}
     if roll < 0.9:  # fffd (incl. trailing targets)

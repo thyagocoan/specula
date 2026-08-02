@@ -143,11 +143,16 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
 
         sig_key = ("lab", cfg["symbol"], cfg["setup_tf"], cfg["exec_tf"],
                    _json.dumps(cfg["entry"], sort_keys=True))
-        long_e, short_e, price_hint = _cached(
+        res = _cached(
             _signal_cache, sig_key,
             lambda: sig.generate(cfg["entry"], cfg["symbol"],
                                  cfg["setup_tf"], cfg["exec_tf"]),
         )
+        sl_hint = None
+        if len(res) == 4:
+            long_e, short_e, price_hint, sl_hint = res
+        else:
+            long_e, short_e, price_hint = res
         entries = long_e.copy()
         short_entries = short_e.copy()
         if price_hint is not None:
@@ -160,6 +165,9 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
         tp_stop = exit_spec.get("tp", np.nan)
         if exit_spec["kind"] == "trail":
             sl_trail = True
+            if sl_stop == "structural":
+                # per-trade trailing distance from the signal (entry→level)
+                sl_stop = sl_hint if sl_hint is not None else np.nan
         elif exit_spec["kind"] == "time":
             # exit N exec bars after the entry signal (approximation: keyed to
             # the signal bar, exact when entries don't overlap within N bars)
