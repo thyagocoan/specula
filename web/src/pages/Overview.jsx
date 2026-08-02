@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Scatter from '../components/Scatter.jsx'
 import { Pf, Ret } from '../components/bits.jsx'
-import { groupSetups, num, setupLabel } from '../data.js'
+import { groupSetups, isCrypto, num, setupLabel } from '../data.js'
 
 // The research funnel: each stage narrows the candidate set before the next
 // spends compute or statistical credibility on it.
@@ -100,8 +100,24 @@ function ProcessingStatus({ onOpenExecute }) {
   )
 }
 
-export default function Overview({ runs, generatedAt, onOpenExecute }) {
+const TABS = [
+  ['all', 'All'],
+  ['crypto', 'Crypto'],
+  ['stocks', 'Stocks'],
+]
+
+export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) {
   const [minTrades, setMinTrades] = useState(20)
+  const [tab, setTab] = useState('all')
+
+  const runs = useMemo(
+    () =>
+      tab === 'all'
+        ? allRuns
+        : allRuns.filter((r) => isCrypto(r.symbol) === (tab === 'crypto')),
+    [allRuns, tab],
+  )
+
   const setups = useMemo(() => groupSetups(runs), [runs])
   const symbols = useMemo(() => new Set(runs.map((r) => r.symbol)), [runs])
 
@@ -137,6 +153,14 @@ export default function Overview({ runs, generatedAt, onOpenExecute }) {
     <div>
       <h1 className="page-title">Overview</h1>
       <p className="page-sub">Registry snapshot · {generatedAt || 'live'}</p>
+      <div className="tabs">
+        {TABS.map(([id, label]) => (
+          <button key={id} className={tab === id ? 'active' : ''}
+            onClick={() => setTab(id)}>
+            {label}
+          </button>
+        ))}
+      </div>
       <div className="tiles">
         <div className="tile"><div className="k">Backtests logged</div><div className="v">{runs.length.toLocaleString()}</div></div>
         <div className="tile"><div className="k">Distinct setups</div><div className="v">{setups.length.toLocaleString()}</div></div>

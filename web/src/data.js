@@ -100,3 +100,5 @@ export function groupSetups(runs) {
 export function uniqueSorted(arr) {
   return [...new Set(arr)].sort()
 }
+
+export const isCrypto = (symbol) => /USD[TC]$/.test(symbol)

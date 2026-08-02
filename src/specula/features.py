@@ -40,9 +40,12 @@ def rsi_entry_mask(symbol: str, exec_tf: str, flt: dict):
     """Boolean masks (long_ok, short_ok) on the exec index from a filter spec:
 
         {"ind": "rsi", "tf": "1d", "window": 14,
-         "long": [35, 100], "short": [0, 65]}
+         "long": [35, 100], "short": [0, 65]}          # inside-band allowed
+        {"ind": "rsi", "tf": "1d", "mode": "outside",
+         "long": [40, 60], "short": [40, 60]}          # only extremes allowed
 
-    Entries outside the allowed band are suppressed.
+    Default mode allows entries when RSI is INSIDE the band; mode="outside"
+    allows entries only when RSI is outside it (fade-at-extremes logic).
     """
     from specula.backtest import frames
 
@@ -52,6 +55,10 @@ def rsi_entry_mask(symbol: str, exec_tf: str, flt: dict):
     aligned = mtf.map_to_exec(rsi, flt["tf"], exec_index)
     lo_l, hi_l = flt.get("long", [0, 100])
     lo_s, hi_s = flt.get("short", [0, 100])
-    long_ok = ((aligned >= lo_l) & (aligned <= hi_l)).fillna(False)
-    short_ok = ((aligned >= lo_s) & (aligned <= hi_s)).fillna(False)
+    if flt.get("mode") == "outside":
+        long_ok = ((aligned < lo_l) | (aligned > hi_l)).fillna(False)
+        short_ok = ((aligned < lo_s) | (aligned > hi_s)).fillna(False)
+    else:
+        long_ok = ((aligned >= lo_l) & (aligned <= hi_l)).fillna(False)
+        short_ok = ((aligned >= lo_s) & (aligned <= hi_s)).fillna(False)
     return long_ok, short_ok
