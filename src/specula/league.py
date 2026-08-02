@@ -82,6 +82,17 @@ def run_symbol(symbol: str, configs: list[dict], fees: dict) -> dict:
             res[c["sig"]] = None
             print(f"[league] {symbol} {c['label']}: "
                   f"{type(e).__name__}: {e}", flush=True)
+
+    # long-lived workers process many symbols per round: without this the
+    # per-symbol frame/signal caches accumulate until the OOM-killer takes a
+    # worker down and the whole pool deadlocks (explorer round 17, 2026-08-02)
+    import gc
+
+    from specula import backtest
+    backtest._resample_cache.clear()
+    backtest._signal_cache.clear()
+    backtest._breakout_cache.clear()
+    gc.collect()
     return res
 
 
@@ -138,15 +149,18 @@ def evaluate(configs: list[dict], holdout_days: int = 60,
 
     t0 = time.time()
     results: dict[str, dict[str, dict]] = {c["sig"]: {} for c in configs}
-    with ProcessPoolExecutor(max_workers=workers) as ex:
+    ex = ProcessPoolExecutor(max_workers=workers)
+    try:
         futs = {ex.submit(run_symbol, sym, configs, fees): sym
                 for sym in syms}
         done = 0
-        for fut in as_completed(futs):
+        # watchdog: a wedged pool (dead worker) must not hang the round
+        # forever — bail with partial results once the round budget is spent
+        for fut in as_completed(futs, timeout=1800 + 60 * len(syms)):
             sym = futs[fut]
             done += 1
             try:
-                for sig, payload in fut.result().items():
+                for sig, payload in fut.result(timeout=600).items():
                     if payload is not None:
                         results[sig][sym] = payload
             except Exception as e:
@@ -155,6 +169,12 @@ def evaluate(configs: list[dict], holdout_days: int = 60,
             if done % 10 == 0 or done == len(syms):
                 print(f"[league] step assets {done}/{len(syms)} "
                       f"({(time.time() - t0) / 60:.1f} min)", flush=True)
+    except TimeoutError:
+        print(f"[league] WATCHDOG: pool stalled after {done} assets — "
+              f"continuing with partial results", flush=True)
+        ex.shutdown(wait=False, cancel_futures=True)
+    else:
+        ex.shutdown()
 
     max_ns = max((t[0] for per in results.values() for p in per.values()
                   for t in p["trades"]), default=None)
