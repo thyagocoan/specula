@@ -22,6 +22,7 @@ const PAGES = [
 
 export default function App() {
   const [page, setPage] = useState('overview')
+  const [reviewAsset, setReviewAsset] = useState('all')
   const [data, setData] = useState(null)
   const [apiUp, setApiUp] = useState(false)
   const [error, setError] = useState(null)
@@ -80,10 +81,15 @@ export default function App() {
       <main className="main">
         {page === 'overview' && (
           <Overview runs={runs} generatedAt={data.generated_at}
-            onOpenExecute={() => setPage('execute')} />
+            asset={reviewAsset} setAsset={setReviewAsset} />
         )}
         {page === 'flow' && <ResearchFlow runs={runs} />}
-        {page === 'assets' && <Assets runs={runs} />}
+        {page === 'assets' && (
+          <Assets runs={runs} onReview={(s) => {
+            setReviewAsset(s)
+            setPage('overview')
+          }} />
+        )}
         {page === 'setups' && <Setups runs={runs} />}
         {page === 'runs' && <Runs runs={runs} />}
         {page === 'walkforward' && <WalkForward />}

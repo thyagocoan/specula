@@ -1,94 +1,111 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Pf, Ret } from '../components/bits.jsx'
-import { groupSetups, num, uniqueSorted } from '../data.js'
+import { Pf, Ret, Th, sortRows } from '../components/bits.jsx'
+import { groupSetups, num } from '../data.js'
 
-function OosLine({ wf, symbol }) {
-  const doc = wf?.symbols?.find((s) => s.symbol === symbol)
-    || wf?.symbols?.find((s) => s.symbol === `${symbol}·lab`)
-  if (!doc) return null
-  const a = doc.scenarios?.[0]?.aggregate
-  if (!a) return null
-  return (
-    <p className="hint" style={{ margin: '4px 0 10px' }}>
-      out-of-sample verdict{doc.symbol.endsWith('·lab') ? ' (lab)' : ''}:{' '}
-      PF <Pf v={a.oos_pf} /> · win {num(a.oos_win_rate_pct, 1)}% ·{' '}
-      <Ret v={a.oos_return_pct} /> over {a.oos_trades} trades
-    </p>
-  )
+// returns of the asset's best-setup equity curve over the trailing N days
+function curveReturn(points, days) {
+  if (!points?.length) return null
+  const last = points[points.length - 1]
+  const cutoff = Date.parse(last.t) - days * 86400e3
+  const window = points.filter((p) => Date.parse(p.t) >= cutoff)
+  if (window.length < 2) return null
+  return 100 * (last.v / window[0].v - 1)
 }
 
-// The core question of the project: what is the best setup per asset?
-export default function Assets({ runs }) {
-  const [minTrades, setMinTrades] = useState(30)
+function oosPf(wf, symbol) {
+  let best = null
+  for (const d of (wf?.symbols || [])) {
+    if (d.symbol !== symbol && d.symbol !== `${symbol}·lab`) continue
+    const pf = d.scenarios?.[0]?.aggregate?.oos_pf
+    if (pf != null && (best === null || pf > best)) best = pf
+  }
+  return best
+}
+
+export default function Assets({ runs, onReview }) {
   const [wf, setWf] = useState(null)
-  const symbols = uniqueSorted(runs.map((r) => r.symbol))
-  const setups = useMemo(() => groupSetups(runs), [runs])
+  const [curves, setCurves] = useState(null)
+  const [sort, setSort] = useState({ col: 'pf_low', dir: 'desc' })
 
   useEffect(() => {
     ;(async () => {
       try {
-        let r = await fetch('/api/walkforward')
+        const r = await fetch('/api/walkforward')
         if (r.ok) {
           const d = await r.json()
-          if (d.available) return setWf(d)
+          if (d.available) setWf(d)
         }
-        r = await fetch('/data/walkforward.json')
-        if (r.ok) setWf(await r.json())
-      } catch { /* none yet */ }
+      } catch { /* none */ }
+      try {
+        const r = await fetch('/data/curves.json')
+        if (r.ok) setCurves(await r.json())
+      } catch { /* none */ }
     })()
   }, [])
+
+  const rows = useMemo(() => {
+    const grouped = groupSetups(runs.filter((r) => (r.n_trades ?? 0) >= 30))
+      .filter((s) => s.pf_low != null)
+    const bestByAsset = new Map()
+    for (const s of grouped) {
+      const prev = bestByAsset.get(s.symbol)
+      if (!prev || s.pf_low > prev.pf_low) bestByAsset.set(s.symbol, s)
+    }
+    return [...bestByAsset.values()].map((s) => {
+      const pts = curves?.curves?.[s.symbol]?.points
+      return {
+        symbol: s.symbol,
+        label: s.label,
+        pf_low: s.pf_low,
+        oos_pf: oosPf(wf, s.symbol),
+        ret_day: curveReturn(pts, 1),
+        ret_week: curveReturn(pts, 7),
+        ret_month: curveReturn(pts, 30),
+      }
+    })
+  }, [runs, wf, curves])
+
+  const sorted = useMemo(() => sortRows(rows, sort.col, sort.dir), [rows, sort])
 
   return (
     <div>
       <h1 className="page-title">Assets</h1>
       <p className="page-sub">
-        Best setups per asset, ranked by profit factor at the lowest fee.
-        Judge robustness by the pair of PF columns, not one number.
+        One line per asset: its best analyzed strategy, the out-of-sample
+        verdict, and that strategy's returns over the trailing day, week and
+        month (in-sample curve). Click an asset for the full review.
       </p>
-      <div className="filters">
-        <label>min trades
-          <input type="number" min="0" value={minTrades}
-            onChange={(e) => setMinTrades(Number(e.target.value) || 0)} />
-        </label>
-      </div>
-      <div className="asset-grid">
-        {symbols.map((sym) => {
-          const rows = setups
-            .filter((s) => s.symbol === sym && s.n_trades >= minTrades && s.pf_low != null)
-            .sort((a, b) => b.pf_low - a.pf_low)
-            .slice(0, 8)
-          const all = runs.filter((r) => r.symbol === sym)
-          return (
-            <div className="card" key={sym}>
-              <h3>{sym} <span className="hint">· {all.length} runs logged</span></h3>
-              <OosLine wf={wf} symbol={sym} />
-              {rows.length === 0 ? (
-                <p className="hint">no setups with ≥{minTrades} trades yet</p>
-              ) : (
-                <table className="grid">
-                  <thead>
-                    <tr>
-                      <th className="txt">Setup</th><th>Trades</th><th>Win %</th>
-                      <th>PF @0.04%</th><th>PF @0.10%</th><th>Return</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((s) => (
-                      <tr key={s.key}>
-                        <td className="txt">{s.label}</td>
-                        <td>{s.n_trades}</td>
-                        <td>{num(s.win_rate, 1)}</td>
-                        <td><Pf v={s.pf_low} /></td>
-                        <td><Pf v={s.pf_high} /></td>
-                        <td><Ret v={s.total_return} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          )
-        })}
+      <div className="card">
+        <table className="grid">
+          <thead>
+            <tr>
+              <Th id="symbol" sort={sort} setSort={setSort} txt>Asset</Th>
+              <th className="txt">Best strategy</th>
+              <Th id="pf_low" sort={sort} setSort={setSort}>PF (in-sample)</Th>
+              <Th id="oos_pf" sort={sort} setSort={setSort}>PF (OOS)</Th>
+              <Th id="ret_day" sort={sort} setSort={setSort}>Day</Th>
+              <Th id="ret_week" sort={sort} setSort={setSort}>Week</Th>
+              <Th id="ret_month" sort={sort} setSort={setSort}>Month</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((r) => (
+              <tr key={r.symbol} className="selectable"
+                onClick={() => onReview?.(r.symbol)}>
+                <td className="txt"><b>{r.symbol}</b></td>
+                <td className="txt">{r.label}</td>
+                <td>{num(r.pf_low)}</td>
+                <td><Pf v={r.oos_pf} /></td>
+                <td>{r.ret_day != null ? <Ret v={r.ret_day} /> : '—'}</td>
+                <td>{r.ret_week != null ? <Ret v={r.ret_week} /> : '—'}</td>
+                <td>{r.ret_month != null ? <Ret v={r.ret_month} /> : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="hint">{rows.length} assets · returns are relative to the
+          latest data day · PF (OOS) is the walk-forward verdict — trust it
+          over the in-sample column</p>
       </div>
     </div>
   )

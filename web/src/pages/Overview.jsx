@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import Area from '../components/Area.jsx'
 import Line from '../components/Line.jsx'
-import Scatter from '../components/Scatter.jsx'
-import { Pf, Ret } from '../components/bits.jsx'
-import { groupSetups, isCrypto, num, setupLabel } from '../data.js'
+import { Pf, Ret, Th, sortRows } from '../components/bits.jsx'
+import { groupSetups, isCrypto, num } from '../data.js'
 
 const TABS = [
   ['all', 'All'],
@@ -39,190 +38,194 @@ function drawdown(points) {
   })
 }
 
-// Report-style panel: strategy vs buy & hold equity + drawdown, for one symbol.
-function ReportPanel({ symbols, curves, days, asset }) {
-  const symbol = asset !== 'all' ? asset : symbols[0]
+// out-of-sample trades + P&L for one symbol within the selected period,
+// from the walk-forward equity curve (one point per stitched OOS trade)
+function wfPeriod(wf, symbol, days) {
+  const docs = (wf?.symbols || []).filter(
+    (d) => d.symbol === symbol || d.symbol === `${symbol}·lab`)
+  let best = null
+  for (const d of docs) {
+    const s = d.scenarios?.[0]
+    if (s?.equity?.length && (!best || s.equity.length > best.equity.length)) {
+      best = s
+    }
+  }
+  if (!best) return { trades: null, pnl: null }
+  let pts = best.equity
+  if (days != null) {
+    const maxT = Date.parse(pts[pts.length - 1].t)
+    pts = pts.filter((p) => Date.parse(p.t) >= maxT - days * 86400e3)
+  }
+  if (!pts.length) return { trades: 0, pnl: 0 }
+  return {
+    trades: pts.length,
+    pnl: 100 * (pts[pts.length - 1].v / pts[0].v - 1),
+  }
+}
+
+function ReportPanel({ symbol, curves, days }) {
   const c = curves?.curves?.[symbol]
   const strat = useMemo(() => slicedRebased(c?.points, days), [c, days])
   const bench = useMemo(() => slicedRebased(c?.bench, days), [c, days])
   const dd = useMemo(() => (strat ? drawdown(strat) : null), [strat])
 
-  return (
-    <div className="card">
-      <h3>
-        {symbol ? `${symbol} — best setup vs buy & hold` : 'P&L'}
-        {asset === 'all' && symbol && (
-          <span className="hint"> · top asset shown, use the asset selector to change</span>
-        )}
-      </h3>
-      {c && <p className="hint" style={{ margin: '0 0 6px' }}>{c.label} · in-sample</p>}
-      {!strat ? (
-        <p className="hint">no curve data for this selection/period yet</p>
-      ) : (
-        <>
-          <div style={{ marginBottom: 6 }}>
-            <span className="chip">
-              <span className="dot" style={{ background: 'var(--series-1)' }} />
-              strategy: <Ret v={100 * (strat[strat.length - 1].v - 1)} />
-            </span>
-            {bench && (
-              <span className="chip">
-                <span className="dot" style={{ background: 'var(--series-2)' }} />
-                buy & hold: <Ret v={100 * (bench[bench.length - 1].v - 1)} />
-              </span>
-            )}
-            <span className="chip">
-              max DD: <b style={{ marginLeft: 4 }}>{(100 * Math.min(...dd.map((p) => p.v))).toFixed(1)}%</b>
-            </span>
-          </div>
-          <Line yLabel="equity multiple" height={240} series={[
-            { name: 'strategy', color: 'var(--series-1)', points: strat },
-            ...(bench ? [{ name: 'buy & hold', color: 'var(--series-2)', points: bench }] : []),
-          ]} />
-          <Area points={dd} height={120} />
-        </>
-      )}
-    </div>
-  )
-}
-
-function BestStrategy({ symbol, symbolRuns, wf }) {
-  const setups = useMemo(() => {
-    const grouped = groupSetups(symbolRuns).filter((s) => s.pf_low != null)
-    const solid = grouped.filter((s) => s.n_trades >= 30)
-    return (solid.length ? solid : grouped.filter((s) => s.n_trades >= 10))
-      .sort((a, b) => b.pf_low - a.pf_low)
-  }, [symbolRuns])
-
-  const best = setups[0]
-  const wfDoc = wf?.symbols?.find((s) => s.symbol === symbol)
-
-  if (!best) {
+  if (!strat) {
     return (
       <div className="card">
-        <h3>Best strategy — {symbol}</h3>
-        <p className="hint">no setups with enough trades logged yet</p>
+        <h3>{symbol} — best setup vs buy &amp; hold</h3>
+        <p className="hint">no curve data for this asset/period yet</p>
       </div>
     )
   }
   return (
     <div className="card">
-      <h3>Best strategy — {symbol} <span className="hint">(in-sample, by PF at lowest fee)</span></h3>
-      <p style={{ fontSize: 15, fontWeight: 600, margin: '4px 0 12px' }}>{best.label}</p>
-      <div className="tiles">
-        <div className="tile"><div className="k">Profit factor (low / high fee)</div>
-          <div className="v"><Pf v={best.pf_low} /> <span className="hint">/</span> <Pf v={best.pf_high} /></div></div>
-        <div className="tile"><div className="k">Win rate</div><div className="v">{num(best.win_rate, 1)}%</div>
-          <div className="d">{best.n_trades} trades</div></div>
-        <div className="tile"><div className="k">Return</div><div className="v"><Ret v={best.total_return} /></div>
-          <div className="d">max DD {num(best.max_dd, 1)}%</div></div>
-        <div className="tile"><div className="k">Sharpe</div><div className="v">{num(best.sharpe)}</div></div>
-        {best.report_run && (
-          <div className="tile"><div className="k">Chart report</div>
-            <div className="d" style={{ marginTop: 8 }}>
-              <a href={`/reports/${best.report_run.run_id}.html`} target="_blank" rel="noreferrer">open interactive report</a>
-            </div></div>
+      <h3>{symbol} — best setup vs buy &amp; hold</h3>
+      {c && <p className="hint" style={{ margin: '0 0 6px' }}>{c.label} · in-sample</p>}
+      <div style={{ marginBottom: 6 }}>
+        <span className="chip">
+          <span className="dot" style={{ background: 'var(--series-1)' }} />
+          strategy: <Ret v={100 * (strat[strat.length - 1].v - 1)} />
+        </span>
+        {bench && (
+          <span className="chip">
+            <span className="dot" style={{ background: 'var(--series-2)' }} />
+            buy &amp; hold: <Ret v={100 * (bench[bench.length - 1].v - 1)} />
+          </span>
         )}
+        <span className="chip">
+          max DD: <b style={{ marginLeft: 4 }}>
+            {(100 * Math.min(...dd.map((p) => p.v))).toFixed(1)}%</b>
+        </span>
       </div>
-      {wfDoc ? (
-        <>
-          <h3 style={{ marginTop: 6 }}>Out-of-sample verdict (walk-forward)</h3>
-          <table className="grid">
-            <thead>
-              <tr><th>Fee/side</th><th>OOS trades</th><th>OOS PF</th><th>OOS win rate</th><th>OOS return</th></tr>
-            </thead>
-            <tbody>
-              {wfDoc.scenarios.map((s) => (
-                <tr key={s.fee}>
-                  <td>{(s.fee * 100).toFixed(2)}%</td>
-                  <td>{s.aggregate.oos_trades}</td>
-                  <td><Pf v={s.aggregate.oos_pf} /></td>
-                  <td>{num(s.aggregate.oos_win_rate_pct, 1)}%</td>
-                  <td><Ret v={s.aggregate.oos_return_pct} /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <p className="hint">walk-forward picks its own winner per fold — the OOS row judges the symbol, not this exact setup</p>
-        </>
-      ) : (
-        <p className="hint">no walk-forward result for this symbol yet — run it from the Execute page</p>
-      )}
+      <Line yLabel="equity multiple" height={240} series={[
+        { name: 'strategy', color: 'var(--series-1)', points: strat },
+        ...(bench ? [{ name: 'buy & hold', color: 'var(--series-2)', points: bench }] : []),
+      ]} />
+      <Area points={dd} height={120} />
     </div>
   )
 }
 
-export default function Overview({ runs: allRuns, generatedAt }) {
-  const [minTrades, setMinTrades] = useState(20)
+function AssetReview({ symbol, runs, wf, curves, days }) {
+  const setups = useMemo(
+    () => groupSetups(runs.filter((r) => r.symbol === symbol))
+      .filter((s) => s.pf_low != null)
+      .sort((a, b) => b.pf_low - a.pf_low)
+      .slice(0, 15),
+    [runs, symbol],
+  )
+  const wfDocs = (wf?.symbols || []).filter(
+    (d) => d.symbol === symbol || d.symbol === `${symbol}·lab`)
+
+  return (
+    <>
+      {wfDocs.length > 0 && (
+        <div className="card">
+          <h3>Out-of-sample verdict (walk-forward) — the numbers that count</h3>
+          <table className="grid">
+            <thead>
+              <tr><th className="txt">Source</th><th>Fee/side</th><th>OOS trades</th>
+                <th>OOS PF</th><th>Win %</th><th>OOS return</th></tr>
+            </thead>
+            <tbody>
+              {wfDocs.flatMap((d) => d.scenarios.map((s) => (
+                <tr key={d.symbol + s.fee}>
+                  <td className="txt">{d.symbol.endsWith('·lab') ? 'lab strategies' : 'core grid'}</td>
+                  <td>{(s.fee * 100).toFixed(2)}%</td>
+                  <td>{s.aggregate.oos_trades}</td>
+                  <td><Pf v={s.aggregate.oos_pf} /></td>
+                  <td>{num(s.aggregate.oos_win_rate_pct, 1)}</td>
+                  <td><Ret v={s.aggregate.oos_return_pct} /></td>
+                </tr>
+              )))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <ReportPanel symbol={symbol} curves={curves} days={days} />
+
+      <div className="card">
+        <h3>Top strategies for {symbol} <span className="hint">(in-sample)</span></h3>
+        <table className="grid">
+          <thead>
+            <tr>
+              <th className="txt">Setup</th><th>Trades</th><th>Win %</th>
+              <th>PF @low fee</th><th>PF @high fee</th><th>Return</th><th>Max DD</th>
+            </tr>
+          </thead>
+          <tbody>
+            {setups.map((s) => (
+              <tr key={s.key}>
+                <td className="txt">{s.label}</td>
+                <td>{s.n_trades}</td>
+                <td>{num(s.win_rate, 1)}</td>
+                <td><Pf v={s.pf_low} /></td>
+                <td><Pf v={s.pf_high} /></td>
+                <td><Ret v={s.total_return} /></td>
+                <td>{num(s.max_dd, 1)}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  )
+}
+
+export default function Overview({ runs: allRuns, generatedAt, asset, setAsset }) {
   const [tab, setTab] = useState('all')
-  const [asset, setAsset] = useState('all')
   const [period, setPeriod] = useState('all')
+  const [sort, setSort] = useState({ col: 'pf_low', dir: 'desc' })
   const [wf, setWf] = useState(null)
   const [curves, setCurves] = useState(null)
 
   useEffect(() => {
     ;(async () => {
       try {
-        let r = await fetch('/api/walkforward')
+        const r = await fetch('/api/walkforward')
         if (r.ok) {
           const d = await r.json()
-          if (d.available) { setWf(d) } else {
-            r = await fetch('/data/walkforward.json')
-            if (r.ok) setWf(await r.json())
-          }
+          if (d.available) setWf(d)
         }
-      } catch { /* no walk-forward yet */ }
+      } catch { /* none yet */ }
       try {
         const r = await fetch('/data/curves.json')
         if (r.ok) setCurves(await r.json())
-      } catch { /* no curves yet */ }
+      } catch { /* none yet */ }
     })()
   }, [])
 
+  const days = PERIODS.find(([id]) => id === period)?.[2] ?? null
+
   const tabRuns = useMemo(
-    () =>
-      tab === 'all'
-        ? allRuns
-        : allRuns.filter((r) => isCrypto(r.symbol) === (tab === 'crypto')),
+    () => (tab === 'all' ? allRuns
+      : allRuns.filter((r) => isCrypto(r.symbol) === (tab === 'crypto'))),
     [allRuns, tab],
   )
   const tabSymbols = useMemo(
     () => [...new Set(tabRuns.map((r) => r.symbol))].sort(),
     [tabRuns],
   )
-  const runs = useMemo(
-    () => (asset === 'all' ? tabRuns : tabRuns.filter((r) => r.symbol === asset)),
-    [tabRuns, asset],
-  )
 
-  const setups = useMemo(() => groupSetups(runs), [runs])
-  const viable = runs.filter((r) => (r.n_trades ?? 0) >= 30 && r.profit_factor != null)
-  const best = [...viable].sort((a, b) => b.profit_factor - a.profit_factor)[0]
+  const rows = useMemo(() => {
+    const grouped = groupSetups(tabRuns.filter((r) => (r.n_trades ?? 0) >= 30))
+      .filter((s) => s.pf_low != null)
+    // one row per asset: its best setup, plus period OOS stats
+    const bestByAsset = new Map()
+    for (const s of grouped) {
+      const prev = bestByAsset.get(s.symbol)
+      if (!prev || s.pf_low > prev.pf_low) bestByAsset.set(s.symbol, s)
+    }
+    return [...bestByAsset.values()].map((s) => {
+      const p = wfPeriod(wf, s.symbol, days)
+      return { ...s, period_trades: p.trades, period_pnl: p.pnl }
+    })
+  }, [tabRuns, wf, days])
 
-  const points = useMemo(
-    () =>
-      runs
-        .filter((r) => (r.n_trades ?? 0) >= minTrades && r.profit_factor != null)
-        .map((r) => ({
-          run_id: r.run_id,
-          x: r.n_trades,
-          y: r.profit_factor,
-          ret: r.total_return_pct,
-          fee: r.params.fee,
-          strategy: r.strategy,
-          label: setupLabel(r),
-        })),
-    [runs, minTrades],
-  )
-
-  const top = useMemo(
-    () =>
-      groupSetups(runs.filter((r) => (r.n_trades ?? 0) >= 30))
-        .filter((s) => s.pf_low != null)
-        .sort((a, b) => b.pf_low - a.pf_low)
-        .slice(0, 8),
-    [runs],
-  )
+  const sorted = useMemo(() => sortRows(rows, sort.col, sort.dir), [rows, sort])
+  const totTrades = rows.reduce((a, r) => a + (r.period_trades || 0), 0)
+  const periodLabel = PERIODS.find(([id]) => id === period)?.[1]
 
   return (
     <div>
@@ -254,65 +257,61 @@ export default function Overview({ runs: allRuns, generatedAt }) {
         </div>
       </div>
 
-      {asset !== 'all' && <BestStrategy symbol={asset} symbolRuns={runs} wf={wf} />}
-
-      <div className="tiles">
-        <div className="tile"><div className="k">Backtests logged</div><div className="v">{runs.length.toLocaleString()}</div></div>
-        <div className="tile"><div className="k">Distinct setups</div><div className="v">{setups.length.toLocaleString()}</div></div>
-        <div className="tile"><div className="k">Assets</div><div className="v">{new Set(runs.map((r) => r.symbol)).size}</div></div>
-        <div className="tile">
-          <div className="k">Best profit factor (≥30 trades)</div>
-          <div className="v">{best ? num(best.profit_factor) : '—'}</div>
-          <div className="d">{best ? setupLabel(best) : 'no qualifying run yet'}</div>
-        </div>
-      </div>
-
-      <div className="card">
-        <h3>Top setups (by profit factor at the lowest fee, ≥30 trades)</h3>
-        <table className="grid">
-          <thead>
-            <tr>
-              <th className="txt">Setup</th><th className="txt">Asset</th><th>Trades</th>
-              <th>Win %</th><th>PF @low fee</th><th>PF @high fee</th><th>Return</th><th>Max DD</th><th>Sharpe</th>
-            </tr>
-          </thead>
-          <tbody>
-            {top.map((s) => (
-              <tr key={s.key}>
-                <td className="txt">{s.label}</td>
-                <td className="txt">{s.symbol}</td>
-                <td>{s.n_trades}</td>
-                <td>{num(s.win_rate, 1)}</td>
-                <td><Pf v={s.pf_low} /></td>
-                <td><Pf v={s.pf_high} /></td>
-                <td><Ret v={s.total_return} /></td>
-                <td>{num(s.max_dd, 1)}%</td>
-                <td>{num(s.sharpe)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="row2">
+      {asset !== 'all' ? (
+        <>
+          <p style={{ margin: '0 0 14px' }}>
+            <button className="btn ghost" onClick={() => setAsset('all')}>
+              ← all assets
+            </button>
+          </p>
+          <AssetReview symbol={asset} runs={tabRuns} wf={wf} curves={curves}
+            days={days} />
+        </>
+      ) : (
         <div className="card">
-          <h3>Profit factor vs. trade count — every logged run</h3>
-          <div className="filters">
-            <label>min trades
-              <input type="number" min="1" value={minTrades}
-                onChange={(e) => setMinTrades(Number(e.target.value) || 1)} />
-            </label>
-            <span className="hint">{points.length} runs shown · full-period stats</span>
-          </div>
-          <Scatter points={points} height={330} />
+          <h3>Top setups — best per asset</h3>
+          <p className="hint" style={{ marginTop: 0 }}>
+            {rows.length} assets with qualifying setups (≥30 trades) ·
+            out-of-sample daytrades {periodLabel.toLowerCase()}: <b>{totTrades.toLocaleString()}</b> ·
+            click a symbol for the full review · OOS columns follow the time filter
+          </p>
+          <table className="grid">
+            <thead>
+              <tr>
+                <Th id="symbol" sort={sort} setSort={setSort} txt>Asset</Th>
+                <th className="txt">Best setup (in-sample)</th>
+                <Th id="n_trades" sort={sort} setSort={setSort}>Trades</Th>
+                <Th id="win_rate" sort={sort} setSort={setSort}>Win %</Th>
+                <Th id="pf_low" sort={sort} setSort={setSort}>PF @low fee</Th>
+                <Th id="pf_high" sort={sort} setSort={setSort}>PF @high fee</Th>
+                <Th id="total_return" sort={sort} setSort={setSort}>Return</Th>
+                <Th id="period_trades" sort={sort} setSort={setSort}>
+                  OOS trades ({periodLabel})</Th>
+                <Th id="period_pnl" sort={sort} setSort={setSort}>
+                  OOS P&L ({periodLabel})</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.slice(0, 300).map((s) => (
+                <tr key={s.symbol} className="selectable"
+                  onClick={() => setAsset(s.symbol)}>
+                  <td className="txt"><a href="#" onClick={(e) => {
+                    e.preventDefault(); setAsset(s.symbol)
+                  }}><b>{s.symbol}</b></a></td>
+                  <td className="txt">{s.label}</td>
+                  <td>{s.n_trades}</td>
+                  <td>{num(s.win_rate, 1)}</td>
+                  <td><Pf v={s.pf_low} /></td>
+                  <td><Pf v={s.pf_high} /></td>
+                  <td><Ret v={s.total_return} /></td>
+                  <td>{s.period_trades ?? '—'}</td>
+                  <td>{s.period_pnl != null ? <Ret v={s.period_pnl} /> : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-        <ReportPanel
-          symbols={[...new Set(top.map((s) => s.symbol))]}
-          curves={curves}
-          days={PERIODS.find(([id]) => id === period)?.[2] ?? null}
-          asset={asset}
-        />
-      </div>
+      )}
     </div>
   )
 }
