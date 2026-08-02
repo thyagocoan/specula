@@ -210,6 +210,39 @@ table.grid tr.selectable { cursor: pointer; }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
 @media (max-width: 1100px) { .row2 { grid-template-columns: 1fr; } }
 
+.controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 18px; }
+.controls .tabs { margin-bottom: 0; }
+.select-pill {
+  position: relative;
+  display: inline-flex;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.select-pill select {
+  appearance: none;
+  -webkit-appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 32px 9px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  min-width: 150px;
+}
+.select-pill::after {
+  content: '▾';
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
+  font-size: 11px;
+}
+
 .tabs { display: inline-flex; gap: 2px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 3px; margin-bottom: 18px; }
 .tabs button {
   border: none; background: transparent; color: var(--ink-2);

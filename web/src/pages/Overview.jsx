@@ -13,9 +13,9 @@ const TABS = [
 
 const PERIODS = [
   ['all', 'All time', null],
-  ['30', 'Last month', 30],
-  ['7', 'Last week', 7],
-  ['1', 'Last day', 1],
+  ['30', 'Month', 30],
+  ['7', 'Week', 7],
+  ['1', 'Day', 1],
 ]
 
 function slicedRebased(points, days) {
@@ -86,62 +86,6 @@ function ReportPanel({ symbols, curves, days, asset }) {
   )
 }
 
-function ProcessingStatus({ onOpenExecute }) {
-  const [jobs, setJobs] = useState(null)
-
-  useEffect(() => {
-    let alive = true
-    async function poll() {
-      try {
-        const r = await fetch('/api/jobs')
-        if (alive && r.ok) setJobs(await r.json())
-      } catch {
-        if (alive) setJobs(null)
-      }
-    }
-    poll()
-    const t = setInterval(poll, 5000)
-    return () => { alive = false; clearInterval(t) }
-  }, [])
-
-  const running = (jobs || []).filter((j) => j.status === 'running')
-  const recent = (jobs || []).filter((j) => j.status !== 'running').slice(0, 3)
-
-  return (
-    <div className="card">
-      <h3>Processing</h3>
-      {jobs === null ? (
-        <p className="hint">job API offline — static snapshot only</p>
-      ) : running.length === 0 && recent.length === 0 ? (
-        <p className="hint">idle — nothing launched this API session</p>
-      ) : (
-        <table className="grid">
-          <tbody>
-            {running.map((j) => (
-              <tr key={j.id}>
-                <td className="txt"><span className="badge running">running</span></td>
-                <td className="txt">{j.label}</td>
-                <td className="txt hint">started {j.started_at?.replace('T', ' ').replace('+00:00', ' UTC')}</td>
-              </tr>
-            ))}
-            {recent.map((j) => (
-              <tr key={j.id}>
-                <td className="txt"><span className={`badge ${j.status === 'done' ? 'done' : 'failed'}`}>{j.status}</span></td>
-                <td className="txt">{j.label}</td>
-                <td className="txt hint">finished {j.finished_at?.replace('T', ' ').replace('+00:00', ' UTC')}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      <p className="hint" style={{ marginBottom: 0 }}>
-        launch and inspect jobs on the{' '}
-        <a href="#" onClick={(e) => { e.preventDefault(); onOpenExecute?.() }}>Execute page</a>
-      </p>
-    </div>
-  )
-}
-
 function BestStrategy({ symbol, symbolRuns, wf }) {
   const setups = useMemo(() => {
     const grouped = groupSetups(symbolRuns).filter((s) => s.pf_low != null)
@@ -208,7 +152,7 @@ function BestStrategy({ symbol, symbolRuns, wf }) {
   )
 }
 
-export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) {
+export default function Overview({ runs: allRuns, generatedAt }) {
   const [minTrades, setMinTrades] = useState(20)
   const [tab, setTab] = useState('all')
   const [asset, setAsset] = useState('all')
@@ -284,8 +228,8 @@ export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) 
     <div>
       <h1 className="page-title">Overview</h1>
       <p className="page-sub">Registry snapshot · {generatedAt || 'live'}</p>
-      <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-        <div className="tabs" style={{ marginBottom: 18 }}>
+      <div className="controls">
+        <div className="tabs">
           {TABS.map(([id, label]) => (
             <button key={id} className={tab === id ? 'active' : ''}
               onClick={() => { setTab(id); setAsset('all') }}>
@@ -293,18 +237,20 @@ export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) 
             </button>
           ))}
         </div>
-        <div className="filters" style={{ marginBottom: 18 }}>
-          <label>asset
-            <select value={asset} onChange={(e) => setAsset(e.target.value)}>
-              <option value="all">All ({tabSymbols.length})</option>
-              {tabSymbols.map((s) => <option key={s}>{s}</option>)}
-            </select>
-          </label>
-          <label>time
-            <select value={period} onChange={(e) => setPeriod(e.target.value)}>
-              {PERIODS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
-            </select>
-          </label>
+        <div className="select-pill">
+          <select value={asset} onChange={(e) => setAsset(e.target.value)}
+            aria-label="asset">
+            <option value="all">All assets ({tabSymbols.length})</option>
+            {tabSymbols.map((s) => <option key={s}>{s}</option>)}
+          </select>
+        </div>
+        <div className="tabs">
+          {PERIODS.map(([id, label]) => (
+            <button key={id} className={period === id ? 'active' : ''}
+              onClick={() => setPeriod(id)}>
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -319,28 +265,6 @@ export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) 
           <div className="v">{best ? num(best.profit_factor) : '—'}</div>
           <div className="d">{best ? setupLabel(best) : 'no qualifying run yet'}</div>
         </div>
-      </div>
-
-      <ProcessingStatus onOpenExecute={onOpenExecute} />
-
-      <div className="row2">
-        <div className="card">
-          <h3>Profit factor vs. trade count — every logged run</h3>
-          <div className="filters">
-            <label>min trades
-              <input type="number" min="1" value={minTrades}
-                onChange={(e) => setMinTrades(Number(e.target.value) || 1)} />
-            </label>
-            <span className="hint">{points.length} runs shown · full-period stats</span>
-          </div>
-          <Scatter points={points} height={330} />
-        </div>
-        <ReportPanel
-          symbols={[...new Set(top.map((s) => s.symbol))]}
-          curves={curves}
-          days={PERIODS.find(([id]) => id === period)?.[2] ?? null}
-          asset={asset}
-        />
       </div>
 
       <div className="card">
@@ -368,6 +292,26 @@ export default function Overview({ runs: allRuns, generatedAt, onOpenExecute }) 
             ))}
           </tbody>
         </table>
+      </div>
+
+      <div className="row2">
+        <div className="card">
+          <h3>Profit factor vs. trade count — every logged run</h3>
+          <div className="filters">
+            <label>min trades
+              <input type="number" min="1" value={minTrades}
+                onChange={(e) => setMinTrades(Number(e.target.value) || 1)} />
+            </label>
+            <span className="hint">{points.length} runs shown · full-period stats</span>
+          </div>
+          <Scatter points={points} height={330} />
+        </div>
+        <ReportPanel
+          symbols={[...new Set(top.map((s) => s.symbol))]}
+          curves={curves}
+          days={PERIODS.find(([id]) => id === period)?.[2] ?? null}
+          asset={asset}
+        />
       </div>
     </div>
   )
