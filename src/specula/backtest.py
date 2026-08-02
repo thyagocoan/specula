@@ -162,11 +162,14 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
 
     flt = cfg.get("filter")
     if flt:
-        if flt.get("ind") != "rsi":
-            raise ValueError(f"unknown filter indicator {flt.get('ind')}")
-        from specula.features import rsi_entry_mask
+        from specula.features import level_entry_mask, rsi_entry_mask
 
-        long_ok, short_ok = rsi_entry_mask(cfg["symbol"], cfg["exec_tf"], flt)
+        if flt.get("ind") == "rsi":
+            long_ok, short_ok = rsi_entry_mask(cfg["symbol"], cfg["exec_tf"], flt)
+        elif flt.get("ind") == "level":
+            long_ok, short_ok = level_entry_mask(cfg["symbol"], cfg["exec_tf"], flt)
+        else:
+            raise ValueError(f"unknown filter indicator {flt.get('ind')}")
         entries = entries & long_ok
         short_entries = short_entries & short_ok
 

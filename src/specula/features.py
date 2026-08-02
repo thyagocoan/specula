@@ -36,6 +36,63 @@ def rsi_matrix(symbol: str, exec_tf: str, tfs: list[str] | None = None,
     return pd.DataFrame(cols, index=exec_index)
 
 
+# --------------------------------------------- higher-TF support/resistance
+
+LEVEL_SPECS = [("sma", "1d", 200), ("sma", "1d", 50), ("ema", "4h", 21)]
+
+
+def level_matrix(symbol: str, exec_tf: str) -> pd.DataFrame:
+    """Distance (%) from close to higher-TF levels, aligned look-ahead safe.
+
+    Columns: dist_{kind}{window}_{tf} (percent above/below the level),
+    slope_{...} (+1 rising / -1 falling level), dist_pdh / dist_pdl
+    (percent from the PRIOR completed day's high/low).
+    """
+    from specula.backtest import frames
+
+    exec_df = frames(symbol, exec_tf)
+    idx = exec_df.index
+    close = exec_df["close"]
+    cols = {}
+    for kind, tf, w in LEVEL_SPECS:
+        s = frames(symbol, tf)["close"]
+        ma = (s.ewm(span=w, adjust=False).mean() if kind == "ema"
+              else s.rolling(w).mean())
+        aligned = mtf.map_to_exec(ma, tf, idx)
+        cols[f"dist_{kind}{w}_{tf}"] = 100 * (close - aligned) / aligned
+        cols[f"slope_{kind}{w}_{tf}"] = np.sign(
+            mtf.map_to_exec(ma.diff(), tf, idx))
+    daily = frames(symbol, "1d")
+    # map_to_exec already delays a day's value until that bar closes, so
+    # these are the prior completed day's extremes at any intraday moment
+    pdh = mtf.map_to_exec(daily["high"], "1d", idx)
+    pdl = mtf.map_to_exec(daily["low"], "1d", idx)
+    cols["dist_pdh"] = 100 * (close - pdh) / pdh
+    cols["dist_pdl"] = 100 * (close - pdl) / pdl
+    return pd.DataFrame(cols, index=idx)
+
+
+def level_entry_mask(symbol: str, exec_tf: str, flt: dict):
+    """Block entries inside specified level-distance bands.
+
+        {"ind": "level",
+         "block_long":  [{"col": "dist_ema21_4h", "lo": -1.0, "hi": 0.0}],
+         "block_short": []}
+
+    Returns (long_ok, short_ok) — True where entries are allowed.
+    """
+    lm = level_matrix(symbol, exec_tf)
+    long_ok = pd.Series(True, index=lm.index)
+    short_ok = pd.Series(True, index=lm.index)
+    for spec in flt.get("block_long", []):
+        band = lm[spec["col"]].between(spec["lo"], spec["hi"])
+        long_ok &= ~band.fillna(False)
+    for spec in flt.get("block_short", []):
+        band = lm[spec["col"]].between(spec["lo"], spec["hi"])
+        short_ok &= ~band.fillna(False)
+    return long_ok, short_ok
+
+
 def rsi_entry_mask(symbol: str, exec_tf: str, flt: dict):
     """Boolean masks (long_ok, short_ok) on the exec index from a filter spec:
 
