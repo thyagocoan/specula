@@ -7,6 +7,9 @@ import polars as pl
 
 DATA_ROOT = Path("data")
 
+EQUITY_SYMBOLS = {"NVDA", "AAPL", "GOOGL", "MSFT", "AMZN", "AVGO", "META", "TSLA",
+                  "BRK.B", "LLY"}
+
 
 def load_crypto_1m(symbol: str = "BTCUSDT", data_root: Path = DATA_ROOT) -> pd.DataFrame:
     """Bronze 1m crypto bars as a UTC-indexed pandas OHLCV frame."""
@@ -44,3 +47,14 @@ def resample_ohlcv(df: pd.DataFrame, rule: str) -> pd.DataFrame:
         {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
     )
     return out.dropna(subset=["open"])
+
+
+def resample_equity(df: pd.DataFrame, rule: str) -> pd.DataFrame:
+    """Session-aligned resampling for US equities: buckets anchored to the
+    09:30 ET open (so a 2h bar covers 09:30-11:30 ET, not arbitrary UTC
+    boundaries). Index stays UTC."""
+    ny = df.tz_convert("America/New_York")
+    out = ny.resample(rule, offset="9h30min", label="left", closed="left").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+    ).dropna(subset=["open"])
+    return out.tz_convert("UTC")

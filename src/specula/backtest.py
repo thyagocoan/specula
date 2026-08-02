@@ -7,10 +7,12 @@ import pandas as pd
 import vectorbt as vbt
 
 from specula import mtf
-from specula.data import load_crypto_1m, resample_ohlcv
+from specula.data import (EQUITY_SYMBOLS, load_crypto_1m, load_equity_1m,
+                          resample_equity, resample_ohlcv)
 
 SLIPPAGE = 0.0001
 INIT_CASH = 100_000
+EOD_ENTRY_CUTOFF_MIN = 15 * 60 + 45  # no new entries from 15:45 ET
 
 _resample_cache: dict[tuple[str, str], pd.DataFrame] = {}
 _signal_cache: dict[tuple, object] = {}
@@ -20,7 +22,12 @@ _breakout_cache: dict[tuple, tuple] = {}
 def frames(symbol: str, tf: str) -> pd.DataFrame:
     key = (symbol, tf)
     if key not in _resample_cache:
-        _resample_cache[key] = resample_ohlcv(load_crypto_1m(symbol), tf)
+        if symbol in EQUITY_SYMBOLS:
+            _resample_cache[key] = resample_equity(
+                load_equity_1m(symbol, session="regular"), tf
+            )
+        else:
+            _resample_cache[key] = resample_ohlcv(load_crypto_1m(symbol), tf)
     return _resample_cache[key]
 
 
@@ -111,6 +118,28 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
 
     else:
         raise ValueError(f"unknown strategy {cfg['strategy']}")
+
+    flt = cfg.get("filter")
+    if flt:
+        if flt.get("ind") != "rsi":
+            raise ValueError(f"unknown filter indicator {flt.get('ind')}")
+        from specula.features import rsi_entry_mask
+
+        long_ok, short_ok = rsi_entry_mask(cfg["symbol"], cfg["exec_tf"], flt)
+        entries = entries & long_ok
+        short_entries = short_entries & short_ok
+
+    if cfg["symbol"] in EQUITY_SYMBOLS:
+        # intraday only: flat by the close, no fresh entries near it
+        ny = exec_df.index.tz_convert("America/New_York")
+        day = pd.Series(ny.date, index=exec_df.index)
+        eod = day != day.shift(-1)  # last bar of each session
+        late = pd.Series(ny.hour * 60 + ny.minute >= EOD_ENTRY_CUTOFF_MIN,
+                         index=exec_df.index)
+        entries = entries & ~late & ~eod
+        short_entries = short_entries & ~late & ~eod
+        exits = exits | eod
+        short_exits = short_exits | eod
 
     return vbt.Portfolio.from_signals(
         close=exec_df["close"],

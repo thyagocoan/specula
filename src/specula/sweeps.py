@@ -2,7 +2,8 @@
 
 import itertools
 
-FEES = [0.0004, 0.001]
+FEES = [0.0004, 0.001]          # crypto: futures taker / spot taker
+EQUITY_FEES = [0.0001, 0.0005]  # equities: zero-commission, cost is spread (1bp / 5bp)
 
 TF_PAIRS = [
     ("4h", e) for e in ["1h", "30min", "15min", "5min", "1min"]
@@ -19,16 +20,18 @@ TF_PAIRS = [
 ]
 
 
-def pair_configs(setup_tf: str, exec_tf: str, symbol: str = "BTCUSDT"):
+def pair_configs(setup_tf: str, exec_tf: str, symbol: str = "BTCUSDT",
+                 fees: list[float] | None = None):
+    fees = FEES if fees is None else fees
     for dev, strict, target, fee in itertools.product(
-        [2.0, 2.5], [True, False], ["r1", "r2", "midband", "opposite"], FEES
+        [2.0, 2.5], [True, False], ["r1", "r2", "midband", "opposite"], fees
     ):
         yield dict(
             strategy="fffd", symbol=symbol, setup_tf=setup_tf,
             exec_tf=exec_tf, dev=dev, strict=strict, target=target, fee=fee,
         )
     for adx, sl, tp, fee in itertools.product(
-        [True, False], [0.005, 0.01], [0.005, 0.01], FEES
+        [True, False], [0.005, 0.01], [0.005, 0.01], fees
     ):
         yield dict(
             strategy="didi", symbol=symbol, setup_tf=setup_tf,

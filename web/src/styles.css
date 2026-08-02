@@ -204,5 +204,17 @@ table.grid tr.selectable { cursor: pointer; }
 .detail .close { float: right; }
 
 .asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr)); gap: 16px; }
+
+.flow { list-style: none; margin: 0; padding: 0; }
+.flow li { padding: 10px 0; border-bottom: 1px solid var(--grid); }
+.flow li:last-child { border-bottom: none; }
+.flow-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.flow-n {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--accent); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; flex-shrink: 0;
+}
+.flow li p { margin: 0 0 0 32px; color: var(--ink-2); font-size: 13px; line-height: 1.5; }
 .err { color: var(--bad-text); padding: 20px; }
 a { color: var(--accent); }

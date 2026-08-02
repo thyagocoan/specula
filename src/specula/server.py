@@ -27,6 +27,14 @@ JOB_TYPES = {
         "label": "MTF sweep (BTCUSDT)",
         "cmd": [sys.executable, "scripts/sweep_mtf_btcusdt.py"],
     },
+    "sweep_equities": {
+        "label": "MTF sweep (10 equities)",
+        "cmd": [sys.executable, "scripts/sweep_mtf_equities.py"],
+    },
+    "rsi_filter": {
+        "label": "RSI filter analysis (FFFD BTCUSDT)",
+        "cmd": [sys.executable, "scripts/rsi_filter_fffd.py"],
+    },
     "walkforward": {
         "label": "Walk-forward validation (BTCUSDT)",
         "cmd": [sys.executable, "scripts/walkforward.py"],

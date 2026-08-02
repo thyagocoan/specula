@@ -11,7 +11,9 @@ export default function Execute({ apiUp }) {
   const [jobs, setJobs] = useState([])
   const [types, setTypes] = useState([
     { id: 'sweep_mtf', label: 'MTF sweep (BTCUSDT)', desc: '912 configs over 19 timeframe pairs; appends to the registry.' },
+    { id: 'sweep_equities', label: 'MTF sweep (10 equities)', desc: '9,120 configs — session-aligned bars, EOD flat, spread-based costs.' },
     { id: 'walkforward', label: 'Walk-forward validation (BTCUSDT)', desc: 'Rolling 120d train / 30d test over the full grid; the out-of-sample verdict.' },
+    { id: 'rsi_filter', label: 'RSI filter analysis (FFFD)', desc: 'Multi-TF RSI at each entry: bucket diagnosis + hypothesis filters vs baseline.' },
     { id: 'export_web', label: 'Re-export web data', desc: 'Refresh runs.json and sync report HTMLs into the app.' },
   ])
   const [selected, setSelected] = useState(null)

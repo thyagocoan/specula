@@ -74,7 +74,10 @@ export default function App() {
         </div>
       </aside>
       <main className="main">
-        {page === 'overview' && <Overview runs={runs} generatedAt={data.generated_at} />}
+        {page === 'overview' && (
+          <Overview runs={runs} generatedAt={data.generated_at}
+            onOpenExecute={() => setPage('execute')} />
+        )}
         {page === 'assets' && <Assets runs={runs} />}
         {page === 'setups' && <Setups runs={runs} />}
         {page === 'runs' && <Runs runs={runs} />}
