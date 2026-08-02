@@ -265,6 +265,10 @@ def one_round(batch: int, rng: random.Random) -> None:
         registry_keep_sigs=keep_sigs)
     if rows:
         league.merge_store(rows, meta)
+        try:
+            league.prune_registry()
+        except Exception as e:
+            print(f"[round] prune failed: {type(e).__name__}: {e}", flush=True)
 
     save_state(round=n_round)
     fresh = [r for r in rows if r["sig"] not in known]

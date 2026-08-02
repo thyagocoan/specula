@@ -248,7 +248,7 @@ def evaluate(configs: list[dict], holdout_days: int = 60,
 
     if log_registry:
         keep = {r["sig"] for r in rows
-                if (r["eligible"] and (r["hold_pf"] or 0) >= 0.95)} \
+                if (r["eligible"] and (r["hold_pf"] or 0) >= 1.1)} \
             | (registry_keep_sigs & set(results.keys()))
         reg_rows = []
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -352,3 +352,45 @@ def first_seen_map() -> dict[str, str]:
         return {}
     return {r["sig"]: r["first_seen"] for r in doc.get("configs", [])
             if r.get("first_seen")}
+
+
+def prune_registry(max_keep_rank: int = 60) -> int:
+    """Keep per-asset league rows only for configs that are approved,
+    favourited, or near the top of the store; delete the rest. The explorer
+    logs winners every round — without pruning the registry grows without
+    bound (hit 229k rows on 2026-08-03)."""
+    from specula import runlog
+    from specula.sweeps import strategy_sig
+
+    doc = load_store()
+    if not doc:
+        return 0
+    keep: set[str] = set()
+    for r in doc.get("configs", []):
+        ranks = [r.get("rank")] + [
+            (r.get("classes") or {}).get(c, {}).get("rank")
+            for c in ("stock", "crypto")]
+        if any(x is not None and x <= max_keep_rank for x in ranks):
+            keep.add(r["sig"])
+    for f in runlog.fav_setups_list():
+        if f.get("params"):
+            keep.add(sig_of(f["params"]))
+
+    df = runlog.load()
+    league_df = df[df["sweep_tag"] == "setup-league-v1"]
+    drop = [rid for rid, params in zip(league_df["run_id"],
+                                       league_df["params"])
+            if strategy_sig(json.loads(params)) not in keep]
+    if not drop:
+        return 0
+    con = runlog._connect()
+    try:
+        con.executemany("DELETE FROM runs WHERE run_id = ?",
+                        [(r,) for r in drop])
+        con.commit()
+    finally:
+        con.close()
+    runlog.export_web(runlog.load())
+    print(f"[league] pruned {len(drop)} registry rows "
+          f"({len(keep)} configs kept)", flush=True)
+    return len(drop)

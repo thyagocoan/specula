@@ -286,8 +286,9 @@ export default function League() {
   const [showArchived, setShowArchived] = useState(false)
   const approvedRows = rows.filter((r) => approvedSigs.has(r.sig))
   const allReview = rows.filter((r) => !approvedSigs.has(r.sig))
-  // clear failures rest in the archive so review stays readable
-  const isArchived = (r) => r.hold_pf != null && r.hold_pf < 0.9
+  // clear failures and never-traded configs rest in the archive
+  const isArchived = (r) =>
+    (r.hold_pf != null && r.hold_pf < 0.9) || !r.hold_trades
   const reviewRows = showArchived ? allReview : allReview.filter((r) => !isArchived(r))
   const archivedCount = allReview.filter(isArchived).length
   const approvedMissing = favs.filter(

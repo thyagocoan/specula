@@ -17,14 +17,15 @@ export function useSort(defaultCol, defaultDir = 'desc') {
 }
 
 export function sortRows(rows, col, dir) {
-  const s = [...rows].sort((a, b) => {
+  const m = dir === 'desc' ? -1 : 1
+  return [...rows].sort((a, b) => {
     const av = a[col]; const bv = b[col]
     if (av == null && bv == null) return 0
-    if (av == null) return 1
+    if (av == null) return 1 // nulls sort last in BOTH directions
     if (bv == null) return -1
-    return typeof av === 'string' ? av.localeCompare(bv) : av - bv
+    const c = typeof av === 'string' ? av.localeCompare(bv) : av - bv
+    return m * c
   })
-  return dir === 'desc' ? s.reverse() : s
 }
 
 export function Th({ id, sort, setSort, children, txt }) {
