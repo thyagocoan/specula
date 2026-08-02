@@ -66,6 +66,7 @@ def main() -> int:
         failures += not run("equity bronze/silver", ["scripts/build_bronze_alpaca.py"])
 
     failures += not run("quality report", ["scripts/quality_report.py"])
+    failures += not run("vix refresh", ["scripts/ingest_vix.py"])
 
     if args.with_backtests:
         # ingest covers ALL assets above; reprocessing is scoped to the

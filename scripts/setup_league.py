@@ -77,7 +77,7 @@ def main() -> None:
     if not configs:
         print("[league] no candidates — star some setups first", flush=True)
         return
-    symbols = None
+    symbols = None  # evaluate() defaults to the stocks-only universe
     if args.symbols:
         keep = {x.strip().upper() for x in args.symbols.split(",")}
         symbols = [x for x in league.universe() if x in keep]

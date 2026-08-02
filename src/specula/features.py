@@ -6,6 +6,8 @@ visible only at that bar's close. A trade entered at 14:03 therefore sees
 yesterday's daily RSI, the last completed 4h bar's RSI, and so on.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -153,10 +155,62 @@ def session_entry_mask(symbol: str, exec_tf: str, flt: dict):
     return ok, ok.copy()
 
 
+# FOMC decision days (2nd meeting day) — published schedule; maintain when
+# the Fed releases new calendar years. NFP days are computed (first Friday).
+FOMC_DAYS = {
+    "2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18", "2025-07-30",
+    "2025-09-17", "2025-10-29", "2025-12-10",
+    "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17", "2026-07-29",
+    "2026-09-16", "2026-10-28", "2026-12-09",
+}
+
+_vix_cache: dict = {}
+
+
+def _vix_series() -> pd.Series:
+    if "s" not in _vix_cache:
+        path = Path("data/meta/vix.csv")
+        df = pd.read_csv(path, parse_dates=["date"])
+        _vix_cache["s"] = pd.Series(df["close"].to_numpy(),
+                                    index=pd.DatetimeIndex(df["date"]))
+    return _vix_cache["s"]
+
+
+def vix_entry_mask(symbol: str, exec_tf: str, flt: dict):
+    """Trade only in a VIX regime: {"ind": "vix", "op": "lt"|"gt", "x": 20}.
+    Uses the PRIOR session's VIX close — look-ahead safe by construction."""
+    from specula.backtest import frames
+
+    idx = frames(symbol, exec_tf).index
+    vix = _vix_series()
+    days = pd.DatetimeIndex(_session_day(symbol, idx))
+    pos = vix.index.searchsorted(days) - 1  # last close strictly before day
+    vals = np.where(pos >= 0, vix.to_numpy()[np.clip(pos, 0, None)], np.nan)
+    x = flt.get("x", 20)
+    ok_arr = (vals < x) if flt.get("op", "lt") == "lt" else (vals > x)
+    ok = pd.Series(np.nan_to_num(ok_arr, nan=0).astype(bool), index=idx)
+    return ok, ok.copy()
+
+
+def event_entry_mask(symbol: str, exec_tf: str, flt: dict):
+    """Macro event days: FOMC decision days + NFP (first Friday of month).
+    mode "avoid" trades every other day; "only" trades just event days."""
+    from specula.backtest import frames
+
+    idx = frames(symbol, exec_tf).index
+    day = pd.DatetimeIndex(_session_day(symbol, idx))
+    is_fomc = pd.Index(day.strftime("%Y-%m-%d")).isin(FOMC_DAYS)
+    is_nfp = (day.weekday == 4) & (day.day <= 7)
+    is_event = pd.Series(is_fomc | is_nfp, index=idx)
+    ok = ~is_event if flt.get("mode", "avoid") == "avoid" else is_event
+    return ok, ok.copy()
+
+
 def regime_entry_mask(symbol: str, exec_tf: str, flt: dict):
     kind = flt.get("ind")
     fn = {"gap": gap_entry_mask, "compression": compression_entry_mask,
-          "trend": trend_entry_mask, "session": session_entry_mask}[kind]
+          "trend": trend_entry_mask, "session": session_entry_mask,
+          "vix": vix_entry_mask, "event": event_entry_mask}[kind]
     return fn(symbol, exec_tf, flt)
 
 

@@ -41,13 +41,20 @@ def label_of(params: dict) -> str:
         return params.get("strategy", "?")
 
 
-def universe() -> list[str]:
+def universe(asset_class: str | None = None) -> list[str]:
+    """All lake symbols; asset_class "stock"/"crypto" restricts. The league
+    and explorer test STOCKS ONLY by design (owner decision 2026-08-02:
+    crypto is 24h and will get its own setup class later)."""
     from specula.data import DATA_ROOT, equity_symbols
 
     crypto_base = (DATA_ROOT / "bronze" / "crypto" / "exchange=binance"
                    / "market=spot")
     crypto = ({p.name.split("=", 1)[1] for p in crypto_base.glob("symbol=*")}
               if crypto_base.exists() else set())
+    if asset_class == "stock":
+        return sorted(equity_symbols())
+    if asset_class == "crypto":
+        return sorted(crypto)
     return sorted(equity_symbols() | crypto)
 
 
@@ -124,7 +131,7 @@ def evaluate(configs: list[dict], holdout_days: int = 60,
     first_seen_map = first_seen_map or {}
     registry_keep_sigs = registry_keep_sigs or set()
 
-    syms = symbols or universe()
+    syms = symbols or universe("stock")
     workers = workers or max(1, min(8, (os.cpu_count() or 8) - 2))
     print(f"[league] {len(configs)} configs x {len(syms)} assets, "
           f"{workers} workers, holdout {holdout_days}d", flush=True)

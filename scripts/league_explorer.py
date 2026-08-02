@@ -54,6 +54,8 @@ GATES = (
     + [{"ind": "trend", "ma": 20}]
     + [{"ind": "session", "window": w}
        for w in ("open60", "close90", "not_midday")]
+    + [{"ind": "vix", "op": "lt", "x": 18}, {"ind": "vix", "op": "gt", "x": 22}]
+    + [{"ind": "event", "mode": m} for m in ("avoid", "only")]
 )
 
 DIRECTIONAL = {"ma_cross", "donchian", "macd", "mom", "orb"}

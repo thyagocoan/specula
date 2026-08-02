@@ -187,7 +187,8 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
             long_ok, short_ok = rsi_entry_mask(cfg["symbol"], cfg["exec_tf"], flt)
         elif flt.get("ind") == "level":
             long_ok, short_ok = level_entry_mask(cfg["symbol"], cfg["exec_tf"], flt)
-        elif flt.get("ind") in ("gap", "compression", "trend", "session"):
+        elif flt.get("ind") in ("gap", "compression", "trend", "session",
+                                "vix", "event"):
             long_ok, short_ok = regime_entry_mask(cfg["symbol"], cfg["exec_tf"], flt)
         else:
             raise ValueError(f"unknown filter indicator {flt.get('ind')}")

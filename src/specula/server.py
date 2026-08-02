@@ -357,9 +357,12 @@ def _journal_approved(sig: str, limit_symbols: int) -> dict:
         if rsig in want:
             by_sig.setdefault(rsig, []).append(r)
 
+    from specula.data import is_equity
+
     trades, setups = [], []
     for fsig, f in want.items():
-        rows = [r for r in by_sig.get(fsig, []) if (r["n_trades"] or 0) >= 5]
+        rows = [r for r in by_sig.get(fsig, [])
+                if (r["n_trades"] or 0) >= 5 and is_equity(r["symbol"])]
         rows.sort(key=lambda r: -(r["profit_factor"]
                                   if math.isfinite(r["profit_factor"]) else 0))
         for r in rows[:limit_symbols]:
@@ -493,11 +496,15 @@ def sync_approved(u: RosterSync):
     want = {f["sig"]: f for f in approved}
     best: dict[str, tuple[float, dict, str]] = {}
     matched = 0
+    from specula.data import is_equity
+
     for r in df.to_dict("records"):
         params = json.loads(r["params"])
         rsig = strategy_sig(params)
         if rsig not in want or (r["n_trades"] or 0) < 5:
             continue
+        if not is_equity(r["symbol"]):
+            continue  # approved setups trade stocks only (crypto = own class)
         matched += 1
         pf = float(r["profit_factor"])
         if not math.isfinite(pf):
