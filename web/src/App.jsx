@@ -8,11 +8,13 @@ import Runs from './pages/Runs.jsx'
 import WalkForward from './pages/WalkForward.jsx'
 import Execute from './pages/Execute.jsx'
 import Autotrade from './pages/Autotrade.jsx'
+import Journal from './pages/Journal.jsx'
 
 const PAGES = [
   ['overview', 'Overview'],
   ['flow', 'Research Flow'],
   ['assets', 'Assets'],
+  ['journal', 'Journal'],
   ['setups', 'Setups'],
   ['runs', 'Runs'],
   ['walkforward', 'Walk-forward'],
@@ -90,6 +92,7 @@ export default function App() {
             setPage('overview')
           }} />
         )}
+        {page === 'journal' && <Journal />}
         {page === 'setups' && <Setups runs={runs} />}
         {page === 'runs' && <Runs runs={runs} />}
         {page === 'walkforward' && <WalkForward />}

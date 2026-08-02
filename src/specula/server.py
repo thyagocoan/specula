@@ -227,17 +227,12 @@ def get_candles(symbol: str, tf: str = "1h", days: float | None = None):
 _trades_cache: dict[str, list] = {}
 
 
-@app.get("/api/trades/{run_id}")
-def get_trades(run_id: str):
-    """Every trade of a logged run with exact entry/exit timestamps."""
+def _run_trades(run_id: str) -> list[dict]:
     if run_id in _trades_cache:
         return _trades_cache[run_id]
     from specula.backtest import build_portfolio
 
-    try:
-        cfg = runlog.get_cfg(run_id)
-    except KeyError:
-        raise HTTPException(404, f"run {run_id} not found")
+    cfg = runlog.get_cfg(run_id)
     pf = build_portfolio(cfg)
     idx = pf.wrapper.index
     out = []
@@ -252,10 +247,81 @@ def get_trades(run_id: str):
             "return_pct": round(100 * float(r["return"]), 3) if closed else None,
             "status": "closed" if closed else "open",
         })
-    if len(_trades_cache) > 60:
+    if len(_trades_cache) > 400:
         _trades_cache.pop(next(iter(_trades_cache)))
     _trades_cache[run_id] = out
     return out
+
+
+@app.get("/api/trades/{run_id}")
+def get_trades(run_id: str):
+    """Every trade of a logged run with exact entry/exit timestamps."""
+    try:
+        return _run_trades(run_id)
+    except KeyError:
+        raise HTTPException(404, f"run {run_id} not found")
+
+
+_journal_cache: dict = {"key": None, "doc": None}
+
+
+@app.get("/api/journal")
+def get_journal(limit_symbols: int = 20):
+    """Chronological trades of each asset's best setup (roster first, else
+    the top assets by OOS profit factor) with per-trade USD P&L at the
+    configured class sizes — the capacity-planning feed for the Journal."""
+    from specula.settings import get_settings
+
+    roster = runlog.autotrade_symbols()
+    s = get_settings()
+    key = (tuple(roster), limit_symbols, json.dumps(s, sort_keys=True))
+    if _journal_cache["key"] == key:
+        return _journal_cache["doc"]
+
+    df = runlog.load()
+    df = df[(df["n_trades"] >= 30) & df["profit_factor"].notna()]
+    best = (df.sort_values("profit_factor", ascending=False)
+              .groupby("symbol").first().reset_index())
+
+    if roster:
+        chosen = best[best["symbol"].isin(roster)]
+    else:
+        oos = {}
+        if WALKFORWARD_JSON.exists():
+            wf = json.loads(WALKFORWARD_JSON.read_text(encoding="utf-8"))
+            for d in wf.get("symbols", []):
+                sym = d["symbol"].split("·")[0]
+                agg = d["scenarios"][0]["aggregate"]
+                pf = agg.get("oos_pf")
+                if (pf is not None and math.isfinite(pf)
+                        and (agg.get("oos_trades") or 0) >= 20):
+                    oos[sym] = max(oos.get(sym, 0), pf)
+        best["oos"] = best["symbol"].map(oos)
+        chosen = (best[best["oos"].notna() & (best["oos"] > 1.0)]
+                  .sort_values("oos", ascending=False).head(limit_symbols))
+
+    trades = []
+    for r in chosen.to_dict("records"):
+        sym = r["symbol"]
+        size = (s["trade_size_crypto_usd"] if sym.endswith(("USDT", "USDC"))
+                else s["trade_size_stock_usd"]) or 1000
+        try:
+            for t in _run_trades(r["run_id"]):
+                t = dict(t)
+                t["symbol"] = sym
+                t["size_usd"] = size
+                t["pnl_usd"] = (round(t["return_pct"] / 100 * size, 2)
+                                if t["return_pct"] is not None else None)
+                trades.append(t)
+        except Exception as e:
+            print(f"[journal] {sym}: {type(e).__name__}: {e}", flush=True)
+    trades.sort(key=lambda t: t["entry_ts"])
+    doc = {"generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+           "scope": "roster" if roster else f"top {len(chosen)} by OOS PF",
+           "symbols": sorted(chosen["symbol"].tolist()),
+           "trades": trades}
+    _journal_cache.update(key=key, doc=doc)
+    return doc
 
 
 @app.get("/api/walkforward")
