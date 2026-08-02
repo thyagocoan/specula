@@ -72,6 +72,94 @@ def level_matrix(symbol: str, exec_tf: str) -> pd.DataFrame:
     return pd.DataFrame(cols, index=idx)
 
 
+# ----------------------------------------------------------- regime gates
+
+def _session_day(symbol: str, idx: pd.DatetimeIndex) -> pd.Index:
+    from specula.data import is_equity
+
+    tz = "America/New_York" if is_equity(symbol) else "UTC"
+    return pd.Index(idx.tz_convert(tz).date)
+
+
+def gap_entry_mask(symbol: str, exec_tf: str, flt: dict):
+    """Qualify only days that OPEN with a gap ≥ min_gap_pct vs the prior
+    close. mode "aligned": longs only on gap-ups, shorts on gap-downs."""
+    from specula.backtest import frames
+
+    ex = frames(symbol, exec_tf)
+    idx = ex.index
+    day = _session_day(symbol, idx)
+    day_open = ex["open"].groupby(day).transform("first")
+    prev_close = ex["close"].groupby(day).last().shift(1)
+    prev = pd.Series(prev_close.reindex(day).to_numpy(), index=idx)
+    gap = (day_open - prev) / prev
+    big = (gap.abs() >= flt.get("min_gap_pct", 0.5) / 100).fillna(False)
+    if flt.get("mode") == "aligned":
+        return big & (gap > 0), big & (gap < 0)
+    return big, big.copy()
+
+
+def compression_entry_mask(symbol: str, exec_tf: str, flt: dict):
+    """Qualify days whose PRIOR day's range was compressed (≤ q × the
+    20-day average range) — the classic expansion-follows-compression day."""
+    from specula.backtest import frames
+
+    ex = frames(symbol, exec_tf)
+    idx = ex.index
+    day = _session_day(symbol, idx)
+    rng = ex["high"].groupby(day).max() - ex["low"].groupby(day).min()
+    ok_day = (rng <= flt.get("q", 0.8) * rng.rolling(20).mean()).shift(1)
+    ok = pd.Series(ok_day.reindex(day).to_numpy(), index=idx)
+    ok = ok.astype("boolean").fillna(False).astype(bool)
+    return ok, ok.copy()
+
+
+def trend_entry_mask(symbol: str, exec_tf: str, flt: dict):
+    """Align with the daily trend: longs only above the daily SMA(ma),
+    shorts only below — using the prior completed day's value."""
+    from specula.backtest import frames
+
+    ex = frames(symbol, exec_tf)
+    idx = ex.index
+    d = frames(symbol, "1d")["close"]
+    sma = d.rolling(flt.get("ma", 20)).mean()
+    above = mtf.map_to_exec(((d > sma).astype(float)), "1d", idx)
+    return (above > 0.5).fillna(False), (above < 0.5).fillna(False)
+
+
+def session_entry_mask(symbol: str, exec_tf: str, flt: dict):
+    """Restrict entries to a session window: open60 (first hour), close90
+    (last 90 min), not_midday (both, excluding the chop)."""
+    from specula.data import is_equity
+
+    from specula.backtest import frames
+
+    idx = frames(symbol, exec_tf).index
+    if is_equity(symbol):
+        local = idx.tz_convert("America/New_York")
+        mins = pd.Series(local.hour * 60 + local.minute - 570, index=idx)
+        length = 390
+    else:
+        mins = pd.Series(idx.hour * 60 + idx.minute, index=idx)
+        length = 1440
+    w = flt.get("window", "open60")
+    if w == "open60":
+        ok = mins < (60 if length == 390 else 240)
+    elif w == "close90":
+        ok = mins >= length - (90 if length == 390 else 240)
+    else:  # not_midday
+        a = 90 if length == 390 else 360
+        ok = (mins < a) | (mins >= length - a)
+    return ok, ok.copy()
+
+
+def regime_entry_mask(symbol: str, exec_tf: str, flt: dict):
+    kind = flt.get("ind")
+    fn = {"gap": gap_entry_mask, "compression": compression_entry_mask,
+          "trend": trend_entry_mask, "session": session_entry_mask}[kind]
+    return fn(symbol, exec_tf, flt)
+
+
 def level_entry_mask(symbol: str, exec_tf: str, flt: dict):
     """Block entries inside specified level-distance bands.
 

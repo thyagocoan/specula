@@ -45,6 +45,25 @@ EXITS = (
 MA_FAST = [5, 8, 13, 21, 34, 55]
 MA_SLOW = [21, 34, 55, 89, 144, 200]
 
+# regime gates: raw directional entries fail universe-wide, so the search
+# space must include the gated versions — that is where a trend edge can hide
+GATES = (
+    [{"ind": "gap", "min_gap_pct": g, "mode": m}
+     for g in (0.5, 1.0) for m in ("any", "aligned")]
+    + [{"ind": "compression", "q": q} for q in (0.6, 0.8)]
+    + [{"ind": "trend", "ma": 20}]
+    + [{"ind": "session", "window": w}
+       for w in ("open60", "close90", "not_midday")]
+)
+
+DIRECTIONAL = {"ma_cross", "donchian", "macd", "mom", "orb"}
+
+
+def is_directional(entry: dict) -> bool:
+    return (entry.get("kind") in DIRECTIONAL
+            or (entry.get("kind") == "boll" and entry.get("mode") == "trend")
+            or (entry.get("kind") == "vwap" and entry.get("mode") == "cross"))
+
 
 def rand_entry(rng: random.Random) -> dict:
     kind = rng.choice(["ma_cross", "donchian", "boll", "macd", "mom",
@@ -91,8 +110,14 @@ def rand_config(rng: random.Random) -> dict:
             setup_tf, exec_tf = rng.choice([
                 ("1h", "5min"), ("1h", "15min"),
                 ("30min", "5min"), ("2h", "15min")])
-        return {"strategy": "lab", "setup_tf": setup_tf, "exec_tf": exec_tf,
-                "entry": entry, "exit": copy.deepcopy(rng.choice(EXITS))}
+        cfg = {"strategy": "lab", "setup_tf": setup_tf, "exec_tf": exec_tf,
+               "entry": entry, "exit": copy.deepcopy(rng.choice(EXITS))}
+        # directional entries almost always get a regime gate — ungated ones
+        # are known universe-wide failures; reversion entries sometimes do
+        p_gate = 0.8 if is_directional(entry) else 0.25
+        if rng.random() < p_gate:
+            cfg["filter"] = copy.deepcopy(rng.choice(GATES))
+        return cfg
     if roll < 0.9:  # fffd (incl. trailing targets)
         setup_tf, exec_tf = rng.choice(TF_PAIRS)
         target = rng.choice(["midband", "upper", "r1", "r2", "trail"])
@@ -101,6 +126,8 @@ def rand_config(rng: random.Random) -> dict:
                "strict": rng.random() < 0.5, "target": target}
         if target == "trail":
             cfg["trail"] = rng.choice([0.005, 0.01, 0.015, "structural"])
+        if rng.random() < 0.25:  # gate-the-champion experiments
+            cfg["filter"] = copy.deepcopy(rng.choice(GATES))
         return cfg
     setup_tf, exec_tf = rng.choice(TF_PAIRS)
     return {"strategy": "didi", "setup_tf": setup_tf, "exec_tf": exec_tf,
@@ -113,17 +140,22 @@ def mutate(params: dict, rng: random.Random) -> dict:
     p = copy.deepcopy(params)
     if p.get("strategy") == "lab":
         op = rng.random()
-        if op < 0.4:
+        if op < 0.3:
             p["exit"] = copy.deepcopy(rng.choice(EXITS))
-        elif op < 0.7:
+        elif op < 0.55:
             p["entry"] = {**rand_entry(rng)}
             if p["entry"]["kind"] != params.get("entry", {}).get("kind"):
                 # keep the family, resample its params only
                 p["entry"] = rand_entry(rng)
-        else:
+        elif op < 0.75:
             p["setup_tf"], p["exec_tf"] = rng.choice(TF_PAIRS)
             if p.get("entry", {}).get("kind") in ("vwap", "orb"):
                 p["setup_tf"] = p["exec_tf"]
+        else:  # gate mutation: add, swap or drop the regime gate
+            if "filter" in p and rng.random() < 0.4:
+                del p["filter"]
+            else:
+                p["filter"] = copy.deepcopy(rng.choice(GATES))
     else:
         fresh = rand_config(rng)
         if fresh.get("strategy") == params.get("strategy"):

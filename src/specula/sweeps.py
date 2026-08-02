@@ -93,6 +93,10 @@ def cfg_label(cfg: dict, with_fee: bool = False) -> str:
     else:
         bits = [json.dumps({k: v for k, v in cfg.items() if k != "fee"},
                            sort_keys=True)[:70]]
+    flt = cfg.get("filter")
+    if flt:
+        extra = " ".join(f"{k} {v}" for k, v in flt.items() if k != "ind")
+        bits.append(f"gate {flt.get('ind')}{' ' + extra if extra else ''}")
     if with_fee and cfg.get("fee") is not None:
         bits.append(f"fee {cfg['fee'] * 100:.2f}%")
     return " · ".join(bits)

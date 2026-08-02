@@ -105,6 +105,17 @@ export function setupKey(run) {
 }
 
 export function setupLabel(run) {
+  const base = setupLabelCore(run)
+  const flt = run.params?.filter
+  if (!flt) return base
+  const extra = Object.entries(flt)
+    .filter(([k]) => k !== 'ind')
+    .map(([k, v]) => `${k} ${v}`)
+    .join(' ')
+  return `${base} · gate ${flt.ind}${extra ? ' ' + extra : ''}`
+}
+
+function setupLabelCore(run) {
   const p = run.params
   const name = run.strategy === 'didi' ? 'Didi' : 'FFFD'
   if (run.sweep_tag === 'single-tf-v1') {
