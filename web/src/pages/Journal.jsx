@@ -96,6 +96,11 @@ const VIEWS = [
 ]
 
 const CAPS = [0, 1, 2, 3, 5, 10]
+const WEEK_WINDOWS = [[0, 'All time'], [4, 'Last 4 weeks'],
+  [8, 'Last 8 weeks'], [12, 'Last 12 weeks'], [26, 'Last 26 weeks']]
+const SPLITS = [[1, '1 trade (100%)'], [2, '2 trades (50% each)'],
+  [3, '3 trades (33% each)'], [4, '4 trades (25% each)'],
+  [5, '5 trades (20% each)']]
 
 // Chronological trade journal grouped by ISO week (Melbourne time) with a
 // concurrency sweep and an execution cap: with "max open trades" set, the
@@ -109,7 +114,24 @@ export default function Journal() {
   const [cls, setCls] = useState('all')
   const [view, setView] = useState('charts')
   const [cap, setCap] = useState(0) // 0 = unlimited
+  const [weeksWin, setWeeksWin] = useState(0) // 0 = all time
+  const [mode, setMode] = useState('fixed') // fixed sizes | capital-limited
+  const [startAmt, setStartAmt] = useState(1000)
+  const [split, setSplit] = useState(1)
   const [showAll, setShowAll] = useState(false)
+  const [fees, setFees] = useState({ stock: 0.035, crypto: 0.10 })
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const r = await fetch('/api/settings')
+        if (r.ok) {
+          const s = await r.json()
+          setFees({ stock: s.fee_stock_pct, crypto: s.fee_crypto_pct })
+        }
+      } catch { /* defaults stand */ }
+    })()
+  }, [])
 
   useEffect(() => {
     ;(async () => {
@@ -148,27 +170,74 @@ export default function Journal() {
   const model = useMemo(() => {
     if (!doc) return null
     const isCrypto = (s) => /USD[TC]$/.test(s)
-    const source = doc.trades.filter((t) =>
+    let source = doc.trades.filter((t) =>
       cls === 'all' ? true : cls === 'crypto' ? isCrypto(t.symbol) : !isCrypto(t.symbol))
 
-    // replay in entry order; when the cap is full, the signal is skipped
-    let open = []
+    // window: keep only the last N calendar weeks (the replay then starts
+    // fresh inside the window with the configured amount)
+    const weekKey = (t) => {
+      const { year, week } = isoWeek(melDate(t.entry_ts))
+      return `${year}-W${String(week).padStart(2, '0')}`
+    }
+    if (weeksWin > 0 && source.length) {
+      const keys = [...new Set(source.map(weekKey))].sort().slice(-weeksWin)
+      const keep = new Set(keys)
+      source = source.filter((t) => keep.has(weekKey(t)))
+    }
+
+    const start = Number(startAmt) > 0 ? Number(startAmt) : 1000
+    let open = [] // {exit_ms, size(committed), pnl}
     let skippedTotal = 0
+    let cash = start
     const trades = source.map((t0) => {
       const t = { ...t0 }
       const entryMs = Date.parse(t.entry_ts)
-      open = open.filter((o) => o.exit_ms > entryMs)
-      if (cap > 0 && open.length >= cap) {
-        t._skipped = true
-        skippedTotal += 1
-      } else {
+      open = open.filter((o) => {
+        if (o.exit_ms > entryMs) return true
+        cash += o.size + (o.pnl || 0) // position closed → capital released
+        return false
+      })
+      const ret = (t.net_return_pct ?? t.return_pct)
+      if (mode === 'capital') {
+        // stake = split share of total equity, but only if that much cash
+        // is actually free — otherwise the signal waits for a release and,
+        // since entries can't wait, is skipped
+        const totalEq = cash + open.reduce((a, o) => a + o.size, 0)
+        const desired = totalEq / split
+        if (cash + 1e-9 < desired || desired <= 0) {
+          t._skipped = 'no free capital'
+          skippedTotal += 1
+          return t
+        }
+        // net_return already carries the %-fee; small stakes additionally
+        // hit IBKR's $0.35/order minimum — charge the shortfall per side
+        const crypto = isCrypto(t.symbol)
+        const feePct = crypto ? fees.crypto : fees.stock
+        const minFee = crypto ? 0 : 0.35
+        const extraPct = 2 * Math.max(0, (minFee / desired) * 100 - feePct)
+        const retNet = ret != null ? ret - extraPct : null
+        t._stake = desired
+        t._pnl = retNet != null ? desired * retNet / 100 : null
+        cash -= desired
         open.push({
           exit_ms: t.exit_ts ? Date.parse(t.exit_ts) : Infinity,
-          size: t.size_usd,
+          size: desired, pnl: t._pnl || 0,
         })
-        t._concurrent = open.length
-        t._capital = open.reduce((a, o) => a + o.size, 0)
+      } else {
+        if (cap > 0 && open.length >= cap) {
+          t._skipped = 'max open reached'
+          skippedTotal += 1
+          return t
+        }
+        t._stake = t.size_usd
+        t._pnl = t.pnl_usd
+        open.push({
+          exit_ms: t.exit_ts ? Date.parse(t.exit_ts) : Infinity,
+          size: t.size_usd, pnl: 0,
+        })
       }
+      t._concurrent = open.length
+      t._capital = open.reduce((a, o) => a + o.size, 0)
       return t
     })
 
@@ -190,20 +259,21 @@ export default function Journal() {
         continue
       }
       w.taken.push(t)
-      if (t.pnl_usd != null) {
-        w.pnl += t.pnl_usd
+      if (t._pnl != null) {
+        w.pnl += t._pnl
         w.closed += 1
-        if (t.pnl_usd > 0) w.wins += 1
+        if (t._pnl > 0) w.wins += 1
       }
       if (t._concurrent > w.maxConc) w.maxConc = t._concurrent
       if (t._capital > w.peakCap) w.peakCap = t._capital
     }
 
-    // bankroll: seed with the peak capital ever needed, then carry each
-    // week's result into the next week's starting amount
+    // bankroll: the configured start, carried week to week
     const asc = [...map.values()].sort((a, b) => a.key.localeCompare(b.key))
-    const seed = Math.max(...asc.map((w) => w.peakCap), 0) ||
-      (cls === 'crypto' ? 100 : 1000)
+    const seed = mode === 'capital'
+      ? start
+      : (Number(startAmt) > 0 ? Number(startAmt)
+        : Math.max(...asc.map((w) => w.peakCap), 0) || 1000)
     let bal = seed
     for (const w of asc) {
       w.start = bal
@@ -225,8 +295,8 @@ export default function Journal() {
     for (const y of byYear.values()) {
       y.trades.sort((a, b) => a.entry_ts.localeCompare(b.entry_ts))
       let cum = 0
-      y.cum = y.trades.filter((t) => t.pnl_usd != null)
-        .map((t) => ({ t: t.entry_ts, v: cum += t.pnl_usd }))
+      y.cum = y.trades.filter((t) => t._pnl != null)
+        .map((t) => ({ t: t.entry_ts, v: cum += t._pnl }))
       y.total = cum
     }
 
@@ -240,7 +310,7 @@ export default function Journal() {
       maxConc: Math.max(0, ...asc.map((w) => w.maxConc)),
       peakCap: Math.max(0, ...asc.map((w) => w.peakCap)),
     }
-  }, [doc, cls, cap])
+  }, [doc, cls, cap, weeksWin, mode, startAmt, split, fees])
 
   if (err) return <div className="card"><span className="neg">{err}</span></div>
   if (approved != null && approved.length === 0) {
@@ -309,15 +379,48 @@ export default function Journal() {
           ))}
         </div>
         <div className="select-pill">
-          <select value={cap} onChange={(e) => setCap(Number(e.target.value))}
-            aria-label="max open trades">
-            {CAPS.map((c) => (
-              <option key={c} value={c}>
-                {c === 0 ? 'max open: unlimited' : `max open: ${c} trade${c > 1 ? 's' : ''}`}
-              </option>
+          <select value={weeksWin}
+            onChange={(e) => setWeeksWin(Number(e.target.value))}
+            aria-label="weeks window">
+            {WEEK_WINDOWS.map(([n, label]) => (
+              <option key={n} value={n}>{label}</option>
             ))}
           </select>
         </div>
+        <div className="select-pill">
+          <select value={mode} onChange={(e) => setMode(e.target.value)}
+            aria-label="sizing mode">
+            <option value="fixed">sizing: fixed per trade</option>
+            <option value="capital">sizing: limited capital</option>
+          </select>
+        </div>
+        <label className="chip" style={{ cursor: 'text' }}>
+          start $
+          <input type="number" min="1" step="100" value={startAmt}
+            onChange={(e) => setStartAmt(e.target.value)}
+            style={{ width: 90, marginLeft: 6 }} />
+        </label>
+        {mode === 'capital' ? (
+          <div className="select-pill">
+            <select value={split} onChange={(e) => setSplit(Number(e.target.value))}
+              aria-label="capital split">
+              {SPLITS.map(([n, label]) => (
+                <option key={n} value={n}>split: {label}</option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          <div className="select-pill">
+            <select value={cap} onChange={(e) => setCap(Number(e.target.value))}
+              aria-label="max open trades">
+              {CAPS.map((c) => (
+                <option key={c} value={c}>
+                  {c === 0 ? 'max open: unlimited' : `max open: ${c} trade${c > 1 ? 's' : ''}`}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -325,12 +428,24 @@ export default function Journal() {
         <p style={{ margin: 0 }}>
           Executed <b>{model.taken}</b> trades
           {model.skippedTotal > 0 && <> · <span className="neg">
-            {model.skippedTotal} skipped by the cap</span></>} ·
-          peak <b>{model.maxConc}</b> open at once · capital needed{' '}
-          <b>${num(model.peakCap, 0)}</b> · total P&amp;L{' '}
-          <Money v={model.final - model.seed} /> on ${num(model.seed, 0)}{' '}
+            {model.skippedTotal} skipped ({mode === 'capital'
+              ? 'waiting for capital' : 'max-open cap'})</span></>} ·
+          peak <b>{model.maxConc}</b> open at once · peak capital committed{' '}
+          <b>${num(model.peakCap, 0)}</b> · started ${num(model.seed, 0)} →
+          finished <b>${num(model.final, 2)}</b> · P&amp;L{' '}
+          <Money v={model.final - model.seed} />{' '}
           (<Ret v={model.seed ? 100 * (model.final / model.seed - 1) : null} />)
         </p>
+        {mode === 'capital' && (
+          <p className="hint" style={{ marginBottom: 0 }}>
+            each trade stakes 1/{split} of the account; a signal only opens
+            when that much cash is free — otherwise it's skipped until a
+            position closes and releases capital. Fees per trade: IBKR{' '}
+            {num(fees.stock, 3)}%/side with a $0.35/order minimum (the
+            minimum is charged when the stake is small enough to matter) ·
+            Binance {num(fees.crypto, 2)}%/side.
+          </p>
+        )}
       </div>
 
       {weeks.length === 0 && (
@@ -410,6 +525,7 @@ export default function Journal() {
                       <th>Entry</th>
                       <th className="txt">Exit (Melbourne)</th>
                       <th>Exit</th>
+                      <th>Stake $</th>
                       <th>P&amp;L $</th>
                       <th>P&amp;L %</th>
                       <th>Open</th>
@@ -417,7 +533,9 @@ export default function Journal() {
                   </thead>
                   <tbody>
                     {w.trades.slice().reverse().map((t, i) => {
-                      const ret = t.net_return_pct ?? t.return_pct
+                      const ret = t._pnl != null && t._stake
+                        ? (100 * t._pnl) / t._stake
+                        : (t.net_return_pct ?? t.return_pct)
                       return (
                         <tr key={i} style={t._skipped ? { opacity: 0.45 } : undefined}>
                           <td className="txt">{fmtDay(t.entry_ts)}</td>
@@ -428,12 +546,13 @@ export default function Journal() {
                           <td>{t.entry_price}</td>
                           <td className="txt">{t.exit_ts ? fmtTime(t.exit_ts, MEL) : 'open'}</td>
                           <td>{t.exit_price ?? '—'}</td>
-                          <td>{t._skipped ? '—' : <Money v={t.pnl_usd} />}</td>
+                          <td>{t._skipped ? '—' : num(t._stake, 2)}</td>
+                          <td>{t._skipped ? '—' : <Money v={t._pnl} />}</td>
                           <td>{t._skipped ? '—' : ret != null
                             ? <span className={ret >= 0 ? 'pos' : 'neg'}>{num(ret, 2)}%</span>
                             : '—'}</td>
                           <td>{t._skipped
-                            ? <span className="neg">skipped</span>
+                            ? <span className="neg" title={t._skipped}>skipped</span>
                             : t._concurrent > 1 ? <b>{t._concurrent}</b> : t._concurrent}</td>
                         </tr>
                       )
