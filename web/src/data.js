@@ -13,6 +13,17 @@ export const pct = (x, d = 1) =>
 
 export const num = (x, d = 2) => (x == null ? '—' : Number(x).toFixed(d))
 
+// identity of a strategy across assets: params minus symbol and fee
+export function strategySig(run) {
+  const p = { ...run.params }
+  delete p.fee
+  delete p.symbol
+  const sorted = Object.keys(p)
+    .sort()
+    .reduce((o, k) => ((o[k] = p[k]), o), {})
+  return `${run.strategy}|${JSON.stringify(sorted)}`
+}
+
 export function setupKey(run) {
   const p = { ...run.params }
   delete p.fee

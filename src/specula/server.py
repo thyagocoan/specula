@@ -201,27 +201,60 @@ CANDLE_TFS = {"1min", "5min", "15min", "30min", "1h", "2h", "4h", "1d"}
 
 
 @app.get("/api/candles/{symbol}")
-def get_candles(symbol: str, tf: str = "1h", days: float | None = None):
-    """OHLC candles for the TradingView-style chart (times = unix UTC)."""
+def get_candles(symbol: str, tf: str = "1h", days: float | None = None,
+                indicators: int = 0):
+    """OHLC candles for the TradingView-style chart (times = unix UTC).
+    indicators=1 adds sma50/sma200/ema21/session vwap/rsi14, computed on the
+    full frame (so lookbacks are honest) before the window is sliced."""
     if tf not in CANDLE_TFS:
         raise HTTPException(400, f"tf must be one of {sorted(CANDLE_TFS)}")
+    import math as _m
+
     import pandas as pd
 
     from specula.backtest import frames
+    from specula.data import is_equity
 
     try:
         df = frames(symbol.upper(), tf)
     except Exception:
         raise HTTPException(404, f"no data for {symbol}")
+
+    ind_cols = []
+    if indicators:
+        from specula.features import wilder_rsi
+
+        df = df.copy()
+        close = df["close"]
+        df["sma50"] = close.rolling(50).mean()
+        df["sma200"] = close.rolling(200).mean()
+        df["ema21"] = close.ewm(span=21, adjust=False).mean()
+        df["rsi"] = wilder_rsi(close, 14)
+        session = (df.index.tz_convert("America/New_York").date
+                   if is_equity(symbol.upper()) else df.index.date)
+        tp = (df["high"] + df["low"] + df["close"]) / 3
+        pv = (tp * df["volume"]).groupby(list(session)).cumsum()
+        vv = df["volume"].groupby(list(session)).cumsum()
+        df["vwap"] = (pv / vv).where(vv > 0)
+        ind_cols = ["sma50", "sma200", "ema21", "rsi", "vwap"]
+
     if days:
         df = df[df.index >= df.index.max() - pd.Timedelta(days=days)]
     df = df.tail(20000)
-    return [
-        {"time": int(ts.timestamp()), "open": round(float(r["open"]), 6),
-         "high": round(float(r["high"]), 6), "low": round(float(r["low"]), 6),
-         "close": round(float(r["close"]), 6)}
-        for ts, r in zip(df.index, df.to_dict("records"))
-    ]
+
+    def _f(v):
+        v = float(v)
+        return round(v, 6) if _m.isfinite(v) else None
+
+    out = []
+    for ts, r in zip(df.index, df.to_dict("records")):
+        row = {"time": int(ts.timestamp()), "open": _f(r["open"]),
+               "high": _f(r["high"]), "low": _f(r["low"]),
+               "close": _f(r["close"])}
+        for c in ind_cols:
+            row[c] = _f(r[c])
+        out.append(row)
+    return out
 
 
 _trades_cache: dict[str, list] = {}

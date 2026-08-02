@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import CandleChart from '../components/CandleChart.jsx'
 import { Pf, Ret, Th, sortRows } from '../components/bits.jsx'
-import { groupSetups, isCrypto, num } from '../data.js'
+import { groupSetups, isCrypto, num, strategySig } from '../data.js'
 
 const TABS = [
   ['all', 'All'],
@@ -101,14 +101,18 @@ function SetupCurve({ runId, days, symbol, onClose }) {
   const [pl, setPl] = useState(null)
   const [err, setErr] = useState(null)
   const [tfSel, setTfSel] = useState(null)
-  const [tz, setTz] = useState('UTC')
+  const [tzSel, setTzSel] = useState(null)
   const [focus, setFocus] = useState(null)
+  const [ind, setInd] = useState({
+    sma50: false, sma200: false, ema21: true, vwap: true, rsi: true,
+  })
   const crypto = /USD[TC]$/.test(symbol)
   const marketTz = crypto ? 'UTC' : 'America/New_York'
   const tf = tfSel ?? CHART_TF[days ?? 'all']
+  const tz = tzSel ?? marketTz // default: the asset's own market time
   const TZS = crypto
-    ? [['UTC', 'UTC'], ['Australia/Melbourne', 'Melbourne']]
-    : [['UTC', 'UTC'], ['America/New_York', 'New York'],
+    ? [['UTC', 'UTC (market)'], ['Australia/Melbourne', 'Melbourne']]
+    : [['America/New_York', 'New York (market)'],
        ['Australia/Melbourne', 'Melbourne']]
 
   useEffect(() => {
@@ -135,7 +139,7 @@ function SetupCurve({ runId, days, symbol, onClose }) {
     ;(async () => {
       try {
         const cr = await fetch(
-          `/api/candles/${symbol}?tf=${tf}${days ? `&days=${days}` : ''}`)
+          `/api/candles/${symbol}?tf=${tf}&indicators=1${days ? `&days=${days}` : ''}`)
         if (!cr.ok) throw new Error('failed to load candles')
         setCandles(await cr.json())
       } catch (e) {
@@ -157,6 +161,26 @@ function SetupCurve({ runId, days, symbol, onClose }) {
     if (!candles) return null
     return candles.map((c) => ({ ...c, time: c.time + tzOffset(tz, c.time) }))
   }, [candles, tz])
+
+  const IND_DEFS = [
+    ['ema21', 'EMA 21', '#4f83e0'],
+    ['sma50', 'SMA 50', '#f0a13c'],
+    ['sma200', 'SMA 200', '#c95b8f'],
+    ['vwap', 'VWAP (session)', '#18a0a8'],
+    ['rsi', 'RSI 14', '#8a68c9'],
+  ]
+
+  const indLines = useMemo(() => {
+    if (!displayCandles) return { lines: [], rsi: null }
+    const pick = (key) => displayCandles
+      .filter((c) => c[key] != null)
+      .map((c) => ({ time: c.time, value: c[key] }))
+    const lines = IND_DEFS
+      .filter(([key]) => key !== 'rsi' && ind[key])
+      .map(([key, name, color]) => ({ name, color, points: pick(key) }))
+      .filter((l) => l.points.length)
+    return { lines, rsi: ind.rsi ? pick('rsi') : null }
+  }, [displayCandles, ind])
 
   const markers = useMemo(() => {
     if (!windowTrades) return []
@@ -236,7 +260,7 @@ function SetupCurve({ runId, days, symbol, onClose }) {
               </select>
             </div>
             <div className="select-pill">
-              <select value={tz} onChange={(e) => setTz(e.target.value)}
+              <select value={tz} onChange={(e) => setTzSel(e.target.value)}
                 aria-label="chart timezone">
                 {TZS.map(([id, label]) => (
                   <option key={id} value={id}>chart time: {label}</option>
@@ -254,13 +278,26 @@ function SetupCurve({ runId, days, symbol, onClose }) {
               </span>
             )}
           </div>
+          <div style={{ marginBottom: 6 }}>
+            {IND_DEFS.map(([key, name, color]) => (
+              <label key={key} className="chip"
+                style={{ cursor: 'pointer', opacity: ind[key] ? 1 : 0.55 }}>
+                <input type="checkbox" checked={ind[key]}
+                  onChange={() => setInd({ ...ind, [key]: !ind[key] })}
+                  style={{ marginRight: 5 }} />
+                <span className="dot" style={{ background: color }} />
+                {name}
+              </label>
+            ))}
+          </div>
           <p className="hint" style={{ margin: '0 0 6px' }}>
             ▲ L = long entry (signal fired) · ▼ S = short entry ·
             ● = exit, labelled with the trade's net P&L % · gold ■ = the trade
             selected below — click a trigger row to zoom to it, click again to
-            zoom out
+            zoom out · RSI draws as the band at the bottom (dotted lines 30/70)
           </p>
-          <CandleChart candles={displayCandles} markers={markers} range={range} />
+          <CandleChart candles={displayCandles} markers={markers} range={range}
+            lines={indLines.lines} rsi={indLines.rsi} />
           <h3 style={{ marginTop: 14 }}>Trigger log{' '}
             <span className="hint">(cross-check in TradingView — market time is
               {crypto ? ' UTC' : ' New York'} · P&L is net of{' '}
@@ -322,7 +359,91 @@ function SetupCurve({ runId, days, symbol, onClose }) {
   )
 }
 
-function AssetReview({ symbol, runs, wf, days }) {
+function FavStrip({ favs, onOpen, onRemove }) {
+  if (!favs.length) return null
+  return (
+    <div className="card">
+      <h3>Favourite strategies{' '}
+        <span className="hint">(click to compare across every asset)</span></h3>
+      <div>
+        {favs.map((f) => (
+          <span key={f.sig} className="chip" style={{ marginBottom: 6 }}>
+            <a href="#" onClick={(e) => { e.preventDefault(); onOpen(f) }}>
+              ★ {f.label}
+            </a>
+            <button className="btn ghost" title="remove favourite"
+              style={{ marginLeft: 6, padding: '0 6px' }}
+              onClick={() => onRemove(f.sig)}>×</button>
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// one favourite strategy applied to every asset that has a logged run for it
+function StrategyBoard({ sig, label, runs, onBack, onAsset }) {
+  const [sort, setSort] = useState({ col: 'pf_low', dir: 'desc' })
+  const rows = useMemo(() => {
+    const groups = groupSetups(runs.filter((r) => strategySig(r) === sig))
+    const bySym = new Map()
+    for (const g of groups) {
+      const prev = bySym.get(g.symbol)
+      if (!prev || (g.pf_low ?? -1) > (prev.pf_low ?? -1)) bySym.set(g.symbol, g)
+    }
+    return [...bySym.values()]
+  }, [runs, sig])
+  const sorted = useMemo(() => sortRows(rows, sort.col, sort.dir), [rows, sort])
+  const winners = rows.filter((r) => (r.pf_low ?? 0) > 1).length
+
+  return (
+    <>
+      <p style={{ margin: '0 0 14px' }}>
+        <button className="btn ghost" onClick={onBack}>← back</button>
+      </p>
+      <div className="card">
+        <h3>★ {label} — across all assets</h3>
+        <p className="hint" style={{ marginTop: 0 }}>
+          logged on <b>{rows.length}</b> assets · profitable (PF&gt;1 @low fee)
+          on <b>{winners}</b> · assets without a row were never swept with this
+          exact setup · in-sample numbers — check the asset's walk-forward
+          verdict before trusting it · click a row for the full asset review
+        </p>
+        <table className="grid">
+          <thead>
+            <tr>
+              <Th id="symbol" sort={sort} setSort={setSort} txt>Asset</Th>
+              <Th id="n_trades" sort={sort} setSort={setSort}>Trades</Th>
+              <Th id="win_rate" sort={sort} setSort={setSort}>Win %</Th>
+              <Th id="pf_low" sort={sort} setSort={setSort}>PF @low fee</Th>
+              <Th id="pf_high" sort={sort} setSort={setSort}>PF @high fee</Th>
+              <Th id="total_return" sort={sort} setSort={setSort}>Return</Th>
+              <Th id="max_dd" sort={sort} setSort={setSort}>Max DD</Th>
+              <Th id="sharpe" sort={sort} setSort={setSort}>Sharpe</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((s) => (
+              <tr key={s.symbol} className="selectable"
+                onClick={() => onAsset(s.symbol)}>
+                <td className="txt"><b>{s.symbol}</b></td>
+                <td>{s.n_trades}</td>
+                <td>{num(s.win_rate, 1)}</td>
+                <td><Pf v={s.pf_low} /></td>
+                <td><Pf v={s.pf_high} /></td>
+                <td><Ret v={s.total_return} /></td>
+                <td>{num(s.max_dd, 1)}%</td>
+                <td>{num(s.sharpe, 2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  )
+}
+
+function AssetReview({ symbol, runs, wf, days, favs, toggleFav }) {
   const [selectedRun, setSelectedRun] = useState(null)
   const [runTrades, setRunTrades] = useState({})
   const fetched = useRef(new Set())
@@ -418,8 +539,9 @@ function AssetReview({ symbol, runs, wf, days }) {
 
       <div className="card">
         <h3>Top strategies for {symbol}{' '}
-          <span className="hint">(★ = best, used by curves &amp; journal ·
-            click a row for its chart, trigger log and period activity)</span></h3>
+          <span className="hint">(☆ = favourite a strategy to compare it across
+            every asset · click a row for its chart, trigger log and period
+            activity)</span></h3>
         <table className="grid">
           <thead>
             <tr>
@@ -433,6 +555,8 @@ function AssetReview({ symbol, runs, wf, days }) {
             {setups.map((s) => {
               const runId = s.byFee?.[s.fees?.[0]]?.run_id
               const tr = runTrades[runId]
+              const sig = strategySig(s.runs[0])
+              const isFav = favs.some((f) => f.sig === sig)
               let pn = null, pPnl = null
               if (tr) {
                 const win = (days != null && refT)
@@ -445,9 +569,20 @@ function AssetReview({ symbol, runs, wf, days }) {
                 <tr key={s.key} className={runId ? 'selectable' : ''}
                   onClick={() => runId && setSelectedRun(runId)}>
                   <td className="txt">
+                    <span title={isFav
+                      ? 'remove from favourites'
+                      : 'favourite — compare this strategy across every asset'}
+                      onClick={(e) => { e.stopPropagation(); toggleFav(sig, s.label) }}
+                      style={{
+                        cursor: 'pointer', marginRight: 6,
+                        color: isFav ? '#e8b93c' : 'var(--muted)',
+                      }}>
+                      {isFav ? '★' : '☆'}
+                    </span>
                     {s.key === favKey && (
-                      <span title="favourite — this asset's best setup"
-                        style={{ color: '#e8b93c', marginRight: 6 }}>★</span>
+                      <span className="badge done"
+                        title="this asset's best setup — used by curves & journal"
+                        style={{ marginRight: 6 }}>best</span>
                     )}
                     {s.label}
                   </td>
@@ -475,6 +610,23 @@ export default function Overview({ runs: allRuns, generatedAt, asset, setAsset }
   const [period, setPeriod] = useState('all')
   const [sort, setSort] = useState({ col: 'pf_low', dir: 'desc' })
   const [wf, setWf] = useState(null)
+  const [board, setBoard] = useState(null) // {sig, label} → cross-asset view
+  const [favs, setFavs] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('specula-fav-strategies') || '[]')
+    } catch {
+      return []
+    }
+  })
+
+  useEffect(() => {
+    localStorage.setItem('specula-fav-strategies', JSON.stringify(favs))
+  }, [favs])
+
+  const toggleFav = (sig, label) => setFavs((prev) =>
+    prev.some((f) => f.sig === sig)
+      ? prev.filter((f) => f.sig !== sig)
+      : [...prev, { sig, label }])
 
   useEffect(() => {
     ;(async () => {
@@ -558,16 +710,26 @@ export default function Overview({ runs: allRuns, generatedAt, asset, setAsset }
         </div>
       </div>
 
-      {asset !== 'all' ? (
+      {board ? (
+        <StrategyBoard sig={board.sig} label={board.label} runs={allRuns}
+          onBack={() => setBoard(null)}
+          onAsset={(s) => { setBoard(null); setAsset(s) }} />
+      ) : asset !== 'all' ? (
         <>
           <p style={{ margin: '0 0 14px' }}>
             <button className="btn ghost" onClick={() => setAsset('all')}>
               ← all assets
             </button>
           </p>
-          <AssetReview symbol={asset} runs={tabRuns} wf={wf} days={days} />
+          <FavStrip favs={favs} onOpen={setBoard}
+            onRemove={(sig) => toggleFav(sig)} />
+          <AssetReview symbol={asset} runs={tabRuns} wf={wf} days={days}
+            favs={favs} toggleFav={toggleFav} />
         </>
       ) : (
+        <>
+        <FavStrip favs={favs} onOpen={setBoard}
+          onRemove={(sig) => toggleFav(sig)} />
         <div className="card">
           <h3>Top setups — best per asset</h3>
           <p className="hint" style={{ marginTop: 0 }}>
@@ -614,6 +776,7 @@ export default function Overview({ runs: allRuns, generatedAt, asset, setAsset }
             </tbody>
           </table>
         </div>
+        </>
       )}
     </div>
   )
