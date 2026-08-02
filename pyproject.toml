@@ -15,6 +15,7 @@ dependencies = [
     "pandas-ta-classic",
     "fastapi>=0.115",
     "uvicorn>=0.30",
+    "anthropic>=0.116",
 ]
 
 [dependency-groups]
