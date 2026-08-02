@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import CandleChart from '../components/CandleChart.jsx'
 import { Pf, Ret, Th, sortRows } from '../components/bits.jsx'
-import { groupSetups, isCrypto, num, strategySig } from '../data.js'
+import { groupSetups, isCrypto, num, strategySig, useFavStrategies } from '../data.js'
 
 const TABS = [
   ['all', 'All'],
@@ -447,21 +447,33 @@ function AssetReview({ symbol, runs, wf, days, favs, toggleFav }) {
   const [selectedRun, setSelectedRun] = useState(null)
   const [runTrades, setRunTrades] = useState({})
   const fetched = useRef(new Set())
-  const setups = useMemo(
-    () => groupSetups(runs.filter((r) => r.symbol === symbol))
+  // favourited strategies are pinned on top for every asset, even when they
+  // wouldn't make this asset's top 15 by profit factor
+  const setups = useMemo(() => {
+    const all = groupSetups(runs.filter((r) => r.symbol === symbol))
       .filter((s) => s.pf_low != null)
       .sort((a, b) => b.pf_low - a.pf_low)
-      .slice(0, 15),
-    [runs, symbol],
-  )
+    const favSigs = new Set(favs.map((f) => f.sig))
+    const isFav = (s) => favSigs.has(strategySig(s.runs[0]))
+    return [...all.filter(isFav), ...all.filter((s) => !isFav(s)).slice(0, 15)]
+  }, [runs, symbol, favs])
   const wfDocs = (wf?.symbols || []).filter(
     (d) => d.symbol === symbol || d.symbol === `${symbol}·lab`)
 
   // the setup curves/journal treat as this asset's best (top PF, ≥30 trades)
-  const favKey = useMemo(
-    () => (setups.find((s) => s.n_trades >= 30) ?? setups[0])?.key,
-    [setups],
-  )
+  const favKey = useMemo(() => {
+    const byPf = [...setups].sort((a, b) => b.pf_low - a.pf_low)
+    return (byPf.find((s) => s.n_trades >= 30) ?? byPf[0])?.key
+  }, [setups])
+
+  // the setup with the most winning trades
+  const winnerKey = useMemo(() => {
+    let best = null
+    for (const s of setups) {
+      if (s.wins != null && (!best || s.wins > best.wins)) best = s
+    }
+    return best?.key
+  }, [setups])
 
   // pull each setup's real trades (few at a time; server caches them) so the
   // table can show activity for whatever time window is selected
@@ -545,7 +557,8 @@ function AssetReview({ symbol, runs, wf, days, favs, toggleFav }) {
         <table className="grid">
           <thead>
             <tr>
-              <th className="txt">Setup</th><th>Trades</th><th>Win %</th>
+              <th className="txt">Setup</th><th>Trades</th><th>Wins</th>
+              <th>Win %</th>
               <th>PF @low fee</th><th>PF @high fee</th><th>Return</th>
               <th>Max DD</th><th>Sharpe</th>
               <th>Trades ({periodLabel})</th><th>P&L $ ({periodLabel})</th>
@@ -584,9 +597,16 @@ function AssetReview({ symbol, runs, wf, days, favs, toggleFav }) {
                         title="this asset's best setup — used by curves & journal"
                         style={{ marginRight: 6 }}>best</span>
                     )}
+                    {s.key === winnerKey && (
+                      <span className="badge done"
+                        title="most winning trades on this asset"
+                        style={{ marginRight: 6, background: '#4f83e0' }}>
+                        most wins</span>
+                    )}
                     {s.label}
                   </td>
                   <td>{s.n_trades}</td>
+                  <td>{s.wins ?? '—'}</td>
                   <td>{num(s.win_rate, 1)}</td>
                   <td><Pf v={s.pf_low} /></td>
                   <td><Pf v={s.pf_high} /></td>
@@ -611,22 +631,7 @@ export default function Overview({ runs: allRuns, generatedAt, asset, setAsset }
   const [sort, setSort] = useState({ col: 'pf_low', dir: 'desc' })
   const [wf, setWf] = useState(null)
   const [board, setBoard] = useState(null) // {sig, label} → cross-asset view
-  const [favs, setFavs] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('specula-fav-strategies') || '[]')
-    } catch {
-      return []
-    }
-  })
-
-  useEffect(() => {
-    localStorage.setItem('specula-fav-strategies', JSON.stringify(favs))
-  }, [favs])
-
-  const toggleFav = (sig, label) => setFavs((prev) =>
-    prev.some((f) => f.sig === sig)
-      ? prev.filter((f) => f.sig !== sig)
-      : [...prev, { sig, label }])
+  const [favs, toggleFav] = useFavStrategies()
 
   useEffect(() => {
     ;(async () => {

@@ -1,3 +1,24 @@
+import { useEffect, useState } from 'react'
+
+// favourite strategies, shared by every page (persisted in localStorage)
+export function useFavStrategies() {
+  const [favs, setFavs] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('specula-fav-strategies') || '[]')
+    } catch {
+      return []
+    }
+  })
+  useEffect(() => {
+    localStorage.setItem('specula-fav-strategies', JSON.stringify(favs))
+  }, [favs])
+  const toggleFav = (sig, label) => setFavs((prev) =>
+    prev.some((f) => f.sig === sig)
+      ? prev.filter((f) => f.sig !== sig)
+      : [...prev, { sig, label }])
+  return [favs, toggleFav]
+}
+
 export async function loadRuns() {
   const res = await fetch('/data/runs.json')
   if (!res.ok) {
@@ -117,6 +138,9 @@ export function groupSetups(runs) {
     s.pf_low = low?.profit_factor ?? null
     s.pf_high = s.byFee[s.fees[s.fees.length - 1]]?.profit_factor ?? null
     s.win_rate = low?.win_rate_pct ?? null
+    s.wins = s.win_rate != null
+      ? Math.round((s.n_trades * s.win_rate) / 100)
+      : null
     s.avg_trade = low?.avg_trade_pct ?? null
     s.total_return = low?.total_return_pct ?? null
     s.max_dd = low?.max_dd_pct ?? null
