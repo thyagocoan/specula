@@ -28,12 +28,23 @@ export function sortRows(rows, col, dir) {
   })
 }
 
-export function Th({ id, sort, setSort, children, txt }) {
+export function Info({ text }) {
+  if (!text) return null
+  return (
+    <span title={text} style={{
+      opacity: 0.45, marginLeft: 4, fontSize: 11, cursor: 'help',
+      fontStyle: 'normal',
+    }}>ⓘ</span>
+  )
+}
+
+export function Th({ id, sort, setSort, children, txt, info }) {
   const active = sort.col === id
   return (
-    <th className={txt ? 'txt' : ''}
+    <th className={txt ? 'txt' : ''} title={info}
       onClick={() => setSort({ col: id, dir: active && sort.dir === 'desc' ? 'asc' : 'desc' })}>
       {children}{active ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : ''}
+      <Info text={info} />
     </th>
   )
 }

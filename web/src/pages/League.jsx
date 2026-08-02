@@ -1,6 +1,40 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Pf, Th, sortRows } from '../components/bits.jsx'
+import { Info, Pf, Th, sortRows } from '../components/bits.jsx'
 import { num } from '../data.js'
+
+const COL_INFO = {
+  rank: 'Leaderboard position by holdout pooled PF, among eligible setups '
+    + 'only (enough holdout trades and assets). "—" = not eligible.',
+  setup: 'The full strategy config: entry family, setup→exec timeframes, '
+    + 'parameters, exit rule, and regime gate if any.',
+  hold_pf: 'Pooled profit factor over the holdout (the last ~60 days — data '
+    + 'the setup was NOT selected on). The main honesty metric: you want '
+    + 'BOTH train and holdout ≥ 1.',
+  hold_trades: 'Closed trades in the holdout window, pooled across all '
+    + 'assets. Eligibility needs 30+.',
+  hold_pnl: 'Total holdout P&L in USD at your per-class trade sizes, net of '
+    + 'venue fees.',
+  hold_sharpe: 'Mean ÷ σ of per-trade P&L in the holdout — risk-adjusted '
+    + 'tiebreaker two setups with equal PF can differ on. Higher = smoother. '
+    + 'Fills in on the next evaluation round for older rows.',
+  breadth: 'Breadth: assets profitable in the holdout / assets with ≥3 '
+    + 'holdout trades. Wide breadth = structural edge, narrow = luck or '
+    + 'asset-specific.',
+  post: 'PF counting ONLY trades on data newer than the day this setup was '
+    + 'first tested — the one number endless searching cannot inflate. '
+    + 'Accumulates as new market days arrive; "—" = no virgin data yet.',
+  train_pf: 'Pooled profit factor over the training window (everything '
+    + 'before the holdout cutoff). Setups are discovered on this data, so '
+    + 'it flatters — never approve on train alone.',
+  train_trades: 'Closed trades in the training window across all assets.',
+  assets: 'How many assets the setup was backtested on (stocks-only '
+    + 'universe).',
+  first_seen: 'When this exact config was first tested — the anchor for the '
+    + 'post-discovery column.',
+  source: 'Where the candidate came from: your ★ favourites, auto-picked '
+    + 'from the registry, a one-off grid, or the explorer (random draw / '
+    + 'mutation of a leader).',
+}
 
 const Money = ({ v }) => v == null ? '—' : (
   <span className={v >= 0 ? 'pos' : 'neg'}>
@@ -145,19 +179,32 @@ function ScoreTable({ title, hint, rows, sort, setSort, isApproved, onAction, em
           <table className="grid">
             <thead>
               <tr>
-                <Th id="rank" sort={sort} setSort={setSort}>Rank</Th>
-                <th className="txt">Setup</th>
-                <th className="txt">Source</th>
-                <Th id="assets_logged" sort={sort} setSort={setSort}>Assets</Th>
-                <Th id="train_pf" sort={sort} setSort={setSort}>Train PF</Th>
-                <Th id="train_trades" sort={sort} setSort={setSort}>Train trades</Th>
-                <Th id="hold_pf" sort={sort} setSort={setSort}>Holdout PF</Th>
-                <Th id="hold_trades" sort={sort} setSort={setSort}>Holdout trades</Th>
-                <Th id="hold_pnl_usd" sort={sort} setSort={setSort}>Holdout P&L $</Th>
-                <Th id="hold_sharpe" sort={sort} setSort={setSort}>Holdout Sharpe/tr</Th>
-                <Th id="hold_assets_pf_gt1" sort={sort} setSort={setSort}>Assets PF&gt;1</Th>
-                <Th id="post_pf" sort={sort} setSort={setSort}>Post-disc. PF</Th>
-                <Th id="first_seen" sort={sort} setSort={setSort} txt>First seen</Th>
+                <Th id="rank" sort={sort} setSort={setSort}
+                  info={COL_INFO.rank}>Rank</Th>
+                <th className="txt" title={COL_INFO.setup}>
+                  Setup<Info text={COL_INFO.setup} /></th>
+                <Th id="hold_pf" sort={sort} setSort={setSort}
+                  info={COL_INFO.hold_pf}>Holdout PF</Th>
+                <Th id="hold_trades" sort={sort} setSort={setSort}
+                  info={COL_INFO.hold_trades}>Hold trades</Th>
+                <Th id="hold_pnl_usd" sort={sort} setSort={setSort}
+                  info={COL_INFO.hold_pnl}>Hold P&L $</Th>
+                <Th id="hold_sharpe" sort={sort} setSort={setSort}
+                  info={COL_INFO.hold_sharpe}>Sharpe/tr</Th>
+                <Th id="hold_assets_pf_gt1" sort={sort} setSort={setSort}
+                  info={COL_INFO.breadth}>Assets PF&gt;1</Th>
+                <Th id="post_pf" sort={sort} setSort={setSort}
+                  info={COL_INFO.post}>Post-disc. PF</Th>
+                <Th id="train_pf" sort={sort} setSort={setSort}
+                  info={COL_INFO.train_pf}>Train PF</Th>
+                <Th id="train_trades" sort={sort} setSort={setSort}
+                  info={COL_INFO.train_trades}>Train trades</Th>
+                <Th id="assets_logged" sort={sort} setSort={setSort}
+                  info={COL_INFO.assets}>Assets</Th>
+                <Th id="first_seen" sort={sort} setSort={setSort} txt
+                  info={COL_INFO.first_seen}>First seen</Th>
+                <th className="txt" title={COL_INFO.source}>
+                  Source<Info text={COL_INFO.source} /></th>
                 <th>Action</th>
               </tr>
             </thead>
@@ -166,11 +213,8 @@ function ScoreTable({ title, hint, rows, sort, setSort, isApproved, onAction, em
                 <tr key={r.sig}
                   style={!r.eligible && !isApproved ? { opacity: 0.5 } : undefined}>
                   <td>{r.rank ?? '—'}</td>
-                  <td className="txt">{isApproved && '✅ '}{r.label}</td>
-                  <td className="txt hint">{r.source}</td>
-                  <td>{r.assets_logged}</td>
-                  <td><Pf v={r.train_pf} /></td>
-                  <td>{r.train_trades}</td>
+                  <td className="txt" style={{ maxWidth: 380, whiteSpace: 'normal' }}>
+                    {isApproved && '✅ '}{r.label}</td>
                   <td><Pf v={r.hold_pf} /></td>
                   <td>{r.hold_trades}</td>
                   <td><Money v={r.hold_pnl_usd} /></td>
@@ -179,7 +223,11 @@ function ScoreTable({ title, hint, rows, sort, setSort, isApproved, onAction, em
                   <td>{r.hold_assets_pf_gt1}/{r.hold_assets}</td>
                   <td title={r.post_trades ? `${r.post_trades} trades since discovery` : 'no data newer than discovery yet'}>
                     <Pf v={r.post_pf} /></td>
+                  <td><Pf v={r.train_pf} /></td>
+                  <td>{r.train_trades}</td>
+                  <td>{r.assets_logged}</td>
                   <td className="txt hint">{r.first_seen?.slice(0, 10) ?? '—'}</td>
+                  <td className="txt hint">{r.source}</td>
                   <td>
                     {isApproved
                       ? <button className="btn ghost" onClick={() => onAction(r)}>
@@ -211,7 +259,8 @@ export default function League() {
   const [favs, setFavs] = useState([])
   const [err, setErr] = useState(null)
   const [msg, setMsg] = useState(null)
-  const [sort, setSort] = useState({ col: 'hold_pf', dir: 'desc' })
+  // default order = rank: eligible leaders first, unranked rows last
+  const [sort, setSort] = useState({ col: 'rank', dir: 'asc' })
   const [cls, setCls] = useState('all')
 
   async function load() {
