@@ -12,8 +12,11 @@ const Money = ({ v }) => v == null ? '—' : (
   </span>
 )
 
-const melMonth = (iso) => new Date(iso)
-  .toLocaleDateString('en-CA', { timeZone: 'Australia/Melbourne' }).slice(0, 7)
+// month buckets in each market's local time (NY for stocks, UTC for crypto)
+const marketMonth = (iso, symbol) => new Date(iso)
+  .toLocaleDateString('en-CA', {
+    timeZone: /USD[TC]$/.test(symbol) ? 'UTC' : 'America/New_York',
+  }).slice(0, 7)
 
 function pooledPf(pnls) {
   const wins = pnls.filter((p) => p > 0).reduce((a, b) => a + b, 0)
@@ -73,7 +76,7 @@ function ApprovedConsistency() {
     let cum = 0
     const curve = []
     for (const t of trades) {
-      const key = melMonth(t.entry_ts)
+      const key = marketMonth(t.entry_ts, t.symbol)
       if (!byMonth.has(key)) {
         byMonth.set(key, { key, n: 0, wins: 0, pnl: 0, pnls: [] })
       }

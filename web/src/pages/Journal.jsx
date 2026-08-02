@@ -3,20 +3,23 @@ import Line from '../components/Line.jsx'
 import { Pf, Ret } from '../components/bits.jsx'
 import { num } from '../data.js'
 
-const MEL = 'Australia/Melbourne'
+// every trade displays and groups in ITS market's local time:
+// New York for stocks, UTC for crypto
+const tzOf = (symbol) =>
+  /USD[TC]$/.test(symbol) ? 'UTC' : 'America/New_York'
 
 const fmtTime = (iso, tz) => new Date(iso).toLocaleString('en-AU', {
   timeZone: tz, day: '2-digit', month: 'short',
   hour: '2-digit', minute: '2-digit', hour12: false,
 })
 
-const fmtDay = (iso) => new Date(iso).toLocaleString('en-AU', {
-  timeZone: MEL, weekday: 'short',
+const fmtDay = (iso, tz) => new Date(iso).toLocaleString('en-AU', {
+  timeZone: tz, weekday: 'short',
 })
 
-// Melbourne-local calendar date (YYYY-MM-DD) of a UTC timestamp
-const melDate = (iso) =>
-  new Date(iso).toLocaleDateString('en-CA', { timeZone: MEL })
+// market-local calendar date (YYYY-MM-DD) of a UTC timestamp
+const localDate = (iso, tz) =>
+  new Date(iso).toLocaleDateString('en-CA', { timeZone: tz })
 
 // ISO-8601 week number of a YYYY-MM-DD date (weeks start Monday)
 function isoWeek(ymd) {
@@ -105,7 +108,7 @@ const SPLITS = Array.from({ length: 10 }, (_, i) => {
     : `${n} trades (${Number((100 / n).toFixed(1))}% each)`]
 })
 
-// Chronological trade journal grouped by ISO week (Melbourne time) with a
+// Chronological trade journal grouped by ISO week (market-local time) with a
 // concurrency sweep and an execution cap: with "max open trades" set, the
 // replay skips any signal that fires while the cap is full — no reprocessing,
 // it's pure arithmetic over the already-computed trade times.
@@ -179,7 +182,7 @@ export default function Journal() {
     // window: keep only the last N calendar weeks (the replay then starts
     // fresh inside the window with the configured amount)
     const weekKey = (t) => {
-      const { year, week } = isoWeek(melDate(t.entry_ts))
+      const { year, week } = isoWeek(localDate(t.entry_ts, tzOf(t.symbol)))
       return `${year}-W${String(week).padStart(2, '0')}`
     }
     if (weeksWin > 0 && source.length) {
@@ -246,7 +249,7 @@ export default function Journal() {
 
     const map = new Map()
     for (const t of trades) {
-      const ymd = melDate(t.entry_ts)
+      const ymd = localDate(t.entry_ts, tzOf(t.symbol))
       const { year, week } = isoWeek(ymd)
       const key = `${year}-W${String(week).padStart(2, '0')}`
       if (!map.has(key)) {
@@ -347,10 +350,10 @@ export default function Journal() {
     <div>
       <h1 className="page-title">Journal</h1>
       <p className="page-sub">
-        League-approved setups only ({doc.scope}). Trades replay in the order
-        they fired; set "max open" to simulate limited capital — capped-out
-        signals are skipped instantly, nothing reprocesses. P&amp;L is net of
-        your venue fees.
+        League-approved setups only ({doc.scope}). Times are each market's
+        local time — New York for stocks, UTC for crypto — and weeks group on
+        the market's calendar. Trades replay in the order they fired; P&amp;L
+        is net of your venue fees.
       </p>
 
       <div className="controls">
@@ -521,12 +524,12 @@ export default function Journal() {
                   <thead>
                     <tr>
                       <th className="txt">Day</th>
-                      <th className="txt">Entry (Melbourne)</th>
+                      <th className="txt">Entry (market time)</th>
                       <th className="txt">Symbol</th>
                       {doc.multi && <th className="txt">Setup</th>}
                       <th className="txt">Side</th>
                       <th>Entry</th>
-                      <th className="txt">Exit (Melbourne)</th>
+                      <th className="txt">Exit (market time)</th>
                       <th>Exit</th>
                       <th>Stake $</th>
                       <th>P&amp;L $</th>
@@ -541,13 +544,13 @@ export default function Journal() {
                         : (t.net_return_pct ?? t.return_pct)
                       return (
                         <tr key={i} style={t._skipped ? { opacity: 0.45 } : undefined}>
-                          <td className="txt">{fmtDay(t.entry_ts)}</td>
-                          <td className="txt">{fmtTime(t.entry_ts, MEL)}</td>
+                          <td className="txt">{fmtDay(t.entry_ts, tzOf(t.symbol))}</td>
+                          <td className="txt">{fmtTime(t.entry_ts, tzOf(t.symbol))}</td>
                           <td className="txt"><b>{t.symbol}</b></td>
                           {doc.multi && <td className="txt hint">{t.setup}</td>}
                           <td className="txt">{t.side}</td>
                           <td>{t.entry_price}</td>
-                          <td className="txt">{t.exit_ts ? fmtTime(t.exit_ts, MEL) : 'open'}</td>
+                          <td className="txt">{t.exit_ts ? fmtTime(t.exit_ts, tzOf(t.symbol)) : 'open'}</td>
                           <td>{t.exit_price ?? '—'}</td>
                           <td>{t._skipped ? '—' : num(t._stake, 2)}</td>
                           <td>{t._skipped ? '—' : <Money v={t._pnl} />}</td>
