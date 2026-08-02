@@ -213,7 +213,9 @@ function ScoreTable({ title, hint, rows, sort, setSort, isApproved, onAction, em
                 <tr key={r.sig}
                   style={!r.eligible && !isApproved ? { opacity: 0.5 } : undefined}>
                   <td>{r.rank ?? '—'}</td>
-                  <td className="txt" style={{ maxWidth: 380, whiteSpace: 'normal' }}>
+                  <td className="txt" style={{
+                    minWidth: 260, maxWidth: 560, whiteSpace: 'normal',
+                  }}>
                     {isApproved && '✅ '}{r.label}</td>
                   <td><Pf v={r.hold_pf} /></td>
                   <td>{r.hold_trades}</td>
