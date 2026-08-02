@@ -197,6 +197,67 @@ def get_curve(run_id: str):
     return doc
 
 
+CANDLE_TFS = {"1min", "5min", "15min", "30min", "1h", "2h", "4h", "1d"}
+
+
+@app.get("/api/candles/{symbol}")
+def get_candles(symbol: str, tf: str = "1h", days: float | None = None):
+    """OHLC candles for the TradingView-style chart (times = unix UTC)."""
+    if tf not in CANDLE_TFS:
+        raise HTTPException(400, f"tf must be one of {sorted(CANDLE_TFS)}")
+    import pandas as pd
+
+    from specula.backtest import frames
+
+    try:
+        df = frames(symbol.upper(), tf)
+    except Exception:
+        raise HTTPException(404, f"no data for {symbol}")
+    if days:
+        df = df[df.index >= df.index.max() - pd.Timedelta(days=days)]
+    df = df.tail(20000)
+    return [
+        {"time": int(ts.timestamp()), "open": round(float(r["open"]), 6),
+         "high": round(float(r["high"]), 6), "low": round(float(r["low"]), 6),
+         "close": round(float(r["close"]), 6)}
+        for ts, r in zip(df.index, df.to_dict("records"))
+    ]
+
+
+_trades_cache: dict[str, list] = {}
+
+
+@app.get("/api/trades/{run_id}")
+def get_trades(run_id: str):
+    """Every trade of a logged run with exact entry/exit timestamps."""
+    if run_id in _trades_cache:
+        return _trades_cache[run_id]
+    from specula.backtest import build_portfolio
+
+    try:
+        cfg = runlog.get_cfg(run_id)
+    except KeyError:
+        raise HTTPException(404, f"run {run_id} not found")
+    pf = build_portfolio(cfg)
+    idx = pf.wrapper.index
+    out = []
+    for r in pf.trades.records.to_dict("records"):
+        closed = int(r["status"]) == 1
+        out.append({
+            "entry_ts": idx[int(r["entry_idx"])].isoformat(),
+            "exit_ts": idx[int(r["exit_idx"])].isoformat() if closed else None,
+            "side": "long" if int(r["direction"]) == 0 else "short",
+            "entry_price": round(float(r["entry_price"]), 6),
+            "exit_price": round(float(r["exit_price"]), 6) if closed else None,
+            "return_pct": round(100 * float(r["return"]), 3) if closed else None,
+            "status": "closed" if closed else "open",
+        })
+    if len(_trades_cache) > 60:
+        _trades_cache.pop(next(iter(_trades_cache)))
+    _trades_cache[run_id] = out
+    return out
+
+
 @app.get("/api/walkforward")
 def get_walkforward():
     if not WALKFORWARD_JSON.exists():

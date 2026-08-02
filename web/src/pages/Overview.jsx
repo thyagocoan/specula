@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import Area from '../components/Area.jsx'
+import CandleChart from '../components/CandleChart.jsx'
 import Line from '../components/Line.jsx'
 import { Pf, Ret, Th, sortRows } from '../components/bits.jsx'
 import { groupSetups, isCrypto, num } from '../data.js'
@@ -123,61 +124,123 @@ function ReportPanel({ symbol, curves, days }) {
   )
 }
 
-function SetupCurve({ runId, days, onClose }) {
-  const [doc, setDoc] = useState(null)
+const CHART_TF = { 1: '5min', 7: '30min', 30: '2h', all: '1d' }
+
+const fmtTime = (iso, tz) => new Date(iso).toLocaleString('en-AU', {
+  timeZone: tz, day: '2-digit', month: 'short',
+  hour: '2-digit', minute: '2-digit', hour12: false,
+})
+
+function SetupCurve({ runId, days, symbol, onClose }) {
+  const [trades, setTrades] = useState(null)
+  const [candles, setCandles] = useState(null)
+  const [pl, setPl] = useState(null)
   const [err, setErr] = useState(null)
+  const crypto = /USD[TC]$/.test(symbol)
+  const marketTz = crypto ? 'UTC' : 'America/New_York'
+  const tf = CHART_TF[days ?? 'all']
 
   useEffect(() => {
-    setDoc(null)
-    setErr(null)
+    setTrades(null); setCandles(null); setPl(null); setErr(null)
     ;(async () => {
       try {
-        const r = await fetch(`/api/curve/${runId}`)
-        if (!r.ok) throw new Error(`curve build failed (${r.status})`)
-        setDoc(await r.json())
+        const [tr, cr, pr] = await Promise.all([
+          fetch(`/api/trades/${runId}`),
+          fetch(`/api/candles/${symbol}?tf=${tf}${days ? `&days=${days}` : ''}`),
+          fetch(`/api/curve/${runId}`),
+        ])
+        if (!tr.ok || !cr.ok) throw new Error('failed to load trade data')
+        setTrades(await tr.json())
+        setCandles(await cr.json())
+        if (pr.ok) setPl(await pr.json())
       } catch (e) {
         setErr(String(e.message || e))
       }
     })()
-  }, [runId])
+  }, [runId, days, symbol, tf])
 
-  const strat = useMemo(() => slicedRebased(doc?.points, days), [doc, days])
-  const price = useMemo(() => slicedRebased(doc?.price, days), [doc, days])
+  const windowTrades = useMemo(() => {
+    if (!trades || !candles?.length) return null
+    const startSec = candles[0].time
+    return trades.filter((t) => Date.parse(t.entry_ts) / 1000 >= startSec)
+  }, [trades, candles])
+
+  const markers = useMemo(() => {
+    if (!windowTrades) return []
+    const m = []
+    for (const t of windowTrades) {
+      const long = t.side === 'long'
+      m.push({
+        time: Math.floor(Date.parse(t.entry_ts) / 1000),
+        position: long ? 'belowBar' : 'aboveBar',
+        color: long ? '#1baf7a' : '#e34948',
+        shape: long ? 'arrowUp' : 'arrowDown',
+        text: long ? 'L' : 'S',
+      })
+      if (t.exit_ts) {
+        m.push({
+          time: Math.floor(Date.parse(t.exit_ts) / 1000),
+          position: long ? 'aboveBar' : 'belowBar',
+          color: (t.return_pct ?? 0) >= 0 ? '#1baf7a' : '#e34948',
+          shape: 'circle',
+          text: `${t.return_pct > 0 ? '+' : ''}${t.return_pct?.toFixed(2)}%`,
+        })
+      }
+    }
+    return m
+  }, [windowTrades])
+
+  const strat = useMemo(() => slicedRebased(pl?.points, days), [pl, days])
 
   return (
     <div className="card">
       <h3>
-        Setup P&L vs price
+        {symbol} — triggers on the chart ({tf} candles, chart times UTC)
         <button className="btn ghost" style={{ float: 'right' }}
           onClick={onClose}>close</button>
       </h3>
+      {pl && <p className="hint" style={{ margin: '0 0 6px' }}>{pl.label}</p>}
       {err && <p className="hint">{err}</p>}
-      {!doc && !err && <p className="hint">building curve…</p>}
-      {doc && (
+      {!candles && !err && <p className="hint">loading chart + trades…</p>}
+      {candles && (
         <>
-          <p className="hint" style={{ margin: '0 0 6px' }}>{doc.label}</p>
-          {!strat ? (
-            <p className="hint">no activity in the selected period</p>
-          ) : (
-            <>
-              <div style={{ marginBottom: 6 }}>
-                <span className="chip">
-                  <span className="dot" style={{ background: 'var(--series-1)' }} />
-                  setup P&L: <Ret v={100 * (strat[strat.length - 1].v - 1)} />
-                </span>
-                {price && (
-                  <span className="chip">
-                    <span className="dot" style={{ background: 'var(--series-2)' }} />
-                    price move: <Ret v={100 * (price[price.length - 1].v - 1)} />
-                  </span>
-                )}
-              </div>
-              <Line yLabel="relative to period start" height={260} series={[
-                { name: 'setup P&L', color: 'var(--series-1)', points: strat },
-                ...(price ? [{ name: 'price', color: 'var(--series-2)', points: price }] : []),
-              ]} />
-            </>
-          )}
+          <div style={{ marginBottom: 6 }}>
+            {strat && (
+              <span className="chip">setup P&L in period:{' '}
+                <Ret v={100 * (strat[strat.length - 1].v - 1)} /></span>
+            )}
+            <span className="chip">
+              triggers in period: <b style={{ marginLeft: 4 }}>{windowTrades?.length ?? 0}</b>
+            </span>
+          </div>
+          <CandleChart candles={candles} markers={markers} />
+          <h3 style={{ marginTop: 14 }}>Trigger log{' '}
+            <span className="hint">(cross-check in TradingView — market time is
+              {crypto ? ' UTC' : ' New York'})</span></h3>
+          <table className="grid">
+            <thead>
+              <tr>
+                <th className="txt">Entry (Melbourne)</th>
+                <th className="txt">Entry ({crypto ? 'UTC' : 'New York'})</th>
+                <th className="txt">Side</th><th>Entry px</th>
+                <th className="txt">Exit ({crypto ? 'UTC' : 'New York'})</th>
+                <th>Exit px</th><th>P&L</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(windowTrades || []).slice().reverse().slice(0, 100).map((t, i) => (
+                <tr key={i}>
+                  <td className="txt">{fmtTime(t.entry_ts, 'Australia/Melbourne')}</td>
+                  <td className="txt">{fmtTime(t.entry_ts, marketTz)}</td>
+                  <td className="txt">{t.side}</td>
+                  <td>{t.entry_price}</td>
+                  <td className="txt">{t.exit_ts ? fmtTime(t.exit_ts, marketTz) : 'open'}</td>
+                  <td>{t.exit_price ?? '—'}</td>
+                  <td>{t.return_pct != null ? <Ret v={t.return_pct} /> : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </>
       )}
     </div>
@@ -236,7 +299,7 @@ function AssetReview({ symbol, runs, wf, curves, days }) {
       <ReportPanel symbol={symbol} curves={curves} days={days} />
 
       {selectedRun && (
-        <SetupCurve runId={selectedRun} days={days}
+        <SetupCurve runId={selectedRun} days={days} symbol={symbol}
           onClose={() => setSelectedRun(null)} />
       )}
 
