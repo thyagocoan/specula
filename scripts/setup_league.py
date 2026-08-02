@@ -194,46 +194,74 @@ def main() -> None:
         return
     cutoff_ns = max_ns - args.holdout_days * 86_400 * 10 ** 9
 
-    rows = []
-    for c in configs:
-        per = results[c["sig"]]
-        agg = {"train": [], "hold": []}
+    # eligibility floors: crypto's universe is ~20 symbols, stocks ~250
+    MIN_ASSETS = {"all": 5, "stock": 5, "crypto": 3}
+
+    def aggregate(items: list[tuple[str, list]], cls: str) -> dict:
+        train, hold = [], []
         asset_hold: dict[str, list] = {}
-        for sym, trades in per.items():
+        n_assets = 0
+        for sym, trades in items:
+            n_assets += 1
             size = sizes["stock"] if is_equity(sym) else sizes["crypto"]
             for ns, ret in trades:
                 usd = ret * size
                 if ns >= cutoff_ns:
-                    agg["hold"].append(usd)
+                    hold.append(usd)
                     asset_hold.setdefault(sym, []).append(usd)
                 else:
-                    agg["train"].append(usd)
+                    train.append(usd)
         hold_assets = {k: v for k, v in asset_hold.items() if len(v) >= 3}
-        pf_by_asset = {k: pooled_pf(v) for k, v in hold_assets.items()}
-        good = [k for k, v in pf_by_asset.items() if v is not None and v > 1]
-        row = {
-            "sig": c["sig"], "label": c["label"], "source": c["source"],
-            "params": c["params"],
-            "assets_logged": len(per),
-            "train_trades": len(agg["train"]),
-            "train_pf": pooled_pf(agg["train"]),
-            "train_pnl_usd": round(sum(agg["train"]), 2),
-            "hold_trades": len(agg["hold"]),
-            "hold_pf": pooled_pf(agg["hold"]),
-            "hold_pnl_usd": round(sum(agg["hold"]), 2),
+        good = [k for k, v in hold_assets.items()
+                if (pf := pooled_pf(v)) is not None and pf > 1]
+        d = {
+            "assets_logged": n_assets,
+            "train_trades": len(train),
+            "train_pf": pooled_pf(train),
+            "train_pnl_usd": round(sum(train), 2),
+            "hold_trades": len(hold),
+            "hold_pf": pooled_pf(hold),
+            "hold_pnl_usd": round(sum(hold), 2),
             "hold_assets": len(hold_assets),
             "hold_assets_pf_gt1": len(good),
         }
-        row["eligible"] = (row["hold_trades"] >= 30 and row["hold_assets"] >= 5)
+        d["eligible"] = (d["hold_trades"] >= 30
+                         and d["hold_assets"] >= MIN_ASSETS[cls])
+        return d
+
+    rows = []
+    for c in configs:
+        per = list(results[c["sig"]].items())
+        stock_items = [(s, t) for s, t in per if is_equity(s)]
+        crypto_items = [(s, t) for s, t in per if not is_equity(s)]
+        row = {
+            "sig": c["sig"], "label": c["label"], "source": c["source"],
+            "params": c["params"],
+            **aggregate(per, "all"),
+            "classes": {
+                "stock": aggregate(stock_items, "stock"),
+                "crypto": aggregate(crypto_items, "crypto"),
+            },
+        }
         rows.append(row)
 
-    eligible = [r for r in rows if r["eligible"] and r["hold_pf"] is not None
-                and math.isfinite(r["hold_pf"])]
-    eligible.sort(key=lambda r: r["hold_pf"], reverse=True)
-    for i, r in enumerate(eligible):
-        r["rank"] = i + 1
+    def rank(get, put) -> list[dict]:
+        eligible = [r for r in rows
+                    if get(r)["eligible"] and get(r)["hold_pf"] is not None
+                    and math.isfinite(get(r)["hold_pf"])]
+        eligible.sort(key=lambda r: get(r)["hold_pf"], reverse=True)
+        for i, r in enumerate(eligible):
+            put(r, i + 1)
+        return eligible
+
+    eligible = rank(lambda r: r, lambda r, i: r.update(rank=i))
+    for cls in ("stock", "crypto"):
+        rank(lambda r, c=cls: r["classes"][c],
+             lambda r, i, c=cls: r["classes"][c].update(rank=i))
 
     def _safe(v):
+        if isinstance(v, dict):
+            return {k: _safe(x) for k, x in v.items()}
         if isinstance(v, float) and not math.isfinite(v):
             return None
         return v

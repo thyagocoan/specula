@@ -17,6 +17,7 @@ export default function League() {
   const [err, setErr] = useState(null)
   const [msg, setMsg] = useState(null)
   const [sort, setSort] = useState({ col: 'hold_pf', dir: 'desc' })
+  const [cls, setCls] = useState('all')
 
   async function load() {
     try {
@@ -59,10 +60,19 @@ export default function League() {
   const statusOf = (sig) => favs.find((f) => f.sig === sig)?.status
   const approved = favs.filter((f) => f.status === 'approved')
 
+  // flatten the chosen class's stats onto the row so sorting and rendering
+  // read the same fields whatever the tab
   const rows = useMemo(() => {
     if (!doc?.configs) return []
-    return sortRows(doc.configs, sort.col, sort.dir)
-  }, [doc, sort])
+    let flat = doc.configs
+    if (cls !== 'all') {
+      flat = doc.configs
+        .filter((r) => r.classes?.[cls])
+        .map((r) => ({ ...r, ...r.classes[cls] }))
+        .filter((r) => r.assets_logged > 0)
+    }
+    return sortRows(flat, sort.col, sort.dir)
+  }, [doc, sort, cls])
 
   return (
     <div>
@@ -76,6 +86,14 @@ export default function League() {
       </p>
 
       <div className="controls">
+        <div className="tabs">
+          {[['all', 'All'], ['stock', 'Stocks'], ['crypto', 'Crypto']].map(([id, label]) => (
+            <button key={id} className={cls === id ? 'active' : ''}
+              onClick={() => setCls(id)}>
+              {label}
+            </button>
+          ))}
+        </div>
         <button className="btn" onClick={launch}>Run the league now</button>
       </div>
 
