@@ -294,31 +294,45 @@ def get_journal(limit_symbols: int = 20):
     if _journal_cache["key"] == key:
         return _journal_cache["doc"]
 
+    from specula.sweeps import cfg_label
+
     df = runlog.load()
     df = df[(df["n_trades"] >= 30) & df["profit_factor"].notna()]
     best = (df.sort_values("profit_factor", ascending=False)
               .groupby("symbol").first().reset_index())
 
+    oos = {}
+    if WALKFORWARD_JSON.exists():
+        wf = json.loads(WALKFORWARD_JSON.read_text(encoding="utf-8"))
+        for d in wf.get("symbols", []):
+            sym = d["symbol"].split("·")[0]
+            agg = d["scenarios"][0]["aggregate"]
+            pf = agg.get("oos_pf")
+            if (pf is not None and math.isfinite(pf)
+                    and (agg.get("oos_trades") or 0) >= 20):
+                oos[sym] = max(oos.get(sym, 0), pf)
+    best["oos"] = best["symbol"].map(oos)
+
     if roster:
         chosen = best[best["symbol"].isin(roster)]
     else:
-        oos = {}
-        if WALKFORWARD_JSON.exists():
-            wf = json.loads(WALKFORWARD_JSON.read_text(encoding="utf-8"))
-            for d in wf.get("symbols", []):
-                sym = d["symbol"].split("·")[0]
-                agg = d["scenarios"][0]["aggregate"]
-                pf = agg.get("oos_pf")
-                if (pf is not None and math.isfinite(pf)
-                        and (agg.get("oos_trades") or 0) >= 20):
-                    oos[sym] = max(oos.get(sym, 0), pf)
-        best["oos"] = best["symbol"].map(oos)
         chosen = (best[best["oos"].notna() & (best["oos"] > 1.0)]
                   .sort_values("oos", ascending=False).head(limit_symbols))
 
-    trades = []
+    trades, setups = [], []
     for r in chosen.to_dict("records"):
         sym = r["symbol"]
+        try:
+            label = cfg_label(json.loads(r["params"]))
+        except Exception:
+            label = r.get("strategy") or "?"
+        pf_val = float(r["profit_factor"])
+        oos_val = float(r.get("oos") if r.get("oos") is not None else math.nan)
+        setups.append({
+            "symbol": sym, "label": label, "run_id": r["run_id"],
+            "pf": pf_val if math.isfinite(pf_val) else None,
+            "oos_pf": oos_val if math.isfinite(oos_val) else None,
+        })
         try:
             for t in _run_trades(r["run_id"]):
                 trades.append({**t, "symbol": sym})
@@ -328,6 +342,7 @@ def get_journal(limit_symbols: int = 20):
     doc = {"generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
            "scope": "roster" if roster else f"top {len(chosen)} by OOS PF",
            "symbols": sorted(chosen["symbol"].tolist()),
+           "setups": sorted(setups, key=lambda s: s["symbol"]),
            "trades": trades}
     _journal_cache.update(key=key, doc=doc)
     return doc
