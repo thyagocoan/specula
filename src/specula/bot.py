@@ -9,6 +9,7 @@ actions stay on the portal and, later, explicit commands.
 
 import json
 import sqlite3
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -162,8 +163,11 @@ Rules:
 OUT-OF-SAMPLE walk-forward results, and remind the user OOS is what counts.
 - Be concise: short paragraphs or dash lists, plain text (no markdown tables, \
 no headers), suitable for a phone screen.
-- You are read-only. If asked to trade, run jobs, or change anything, say \
-that actions happen via the portal or explicit commands, not chat.
+- You are read-only for actions: if asked to trade, run jobs, or change \
+anything, say that actions happen via the portal, not chat.
+- You DO automatically push a Telegram alert whenever a background job \
+finishes (done or failed). If the user asks to be notified when work \
+completes, confirm it will happen automatically — no need to check back.
 - Fee context: crypto fees 0.04%/0.10% per side; stocks 0.01%/0.05%."""
 
 
@@ -241,11 +245,39 @@ def answer_question(question: str) -> str:
     return text.strip() or "no answer produced"
 
 
+def _job_watcher() -> None:
+    """Push an alert whenever a portal job transitions out of 'running'."""
+    seen: dict[str, str] = {}
+    first = True
+    while True:
+        try:
+            with urllib.request.urlopen(f"{API}/api/jobs", timeout=5) as r:
+                jobs = json.loads(r.read())
+            for j in jobs:
+                prev = seen.get(j["id"])
+                seen[j["id"]] = j["status"]
+                if first or prev != "running" or j["status"] == "running":
+                    continue
+                mark = "DONE" if j["status"] == "done" else "FAILED"
+                dur = ""
+                if j.get("started_at") and j.get("finished_at"):
+                    secs = (datetime.fromisoformat(j["finished_at"])
+                            - datetime.fromisoformat(j["started_at"])).total_seconds()
+                    dur = f" in {secs / 3600:.1f}h" if secs > 5400 else f" in {secs / 60:.0f}min"
+                send(f"[{mark}] {j['label']}{dur}. Ask me for the results or send /status.")
+                print(f"[bot] alerted: {j['label']} -> {j['status']}", flush=True)
+            first = False
+        except Exception:
+            pass
+        time.sleep(60)
+
+
 def run(token: str, chat_id: str, client: anthropic.Anthropic) -> None:
     global _client, _tg_token, _chat_id
     _client, _tg_token, _chat_id = client, token, str(chat_id)
+    threading.Thread(target=_job_watcher, daemon=True).start()
     offset = 0
-    print("[bot] polling for messages", flush=True)
+    print("[bot] polling for messages, job watcher active", flush=True)
     while True:
         try:
             updates = tg("getUpdates", offset=offset, timeout=50)
