@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import Line from '../components/Line.jsx'
 import { num } from '../data.js'
 
 const MEL = 'Australia/Melbourne'
@@ -48,6 +49,39 @@ const Money = ({ v }) => v == null ? '—' : (
     {v < 0 ? '-' : ''}${Math.abs(v).toFixed(2)}
   </span>
 )
+
+// weekly P&L bar strip for one year: green above / red below the zero line
+function WeekBars({ weeks }) {
+  const W = 900, H = 170, padB = 26, padT = 12
+  const plotH = H - padT - padB
+  const zero = padT + plotH / 2
+  const max = Math.max(...weeks.map((w) => Math.abs(w.pnl)), 1)
+  const bw = W / weeks.length
+  const labelEvery = Math.max(1, Math.ceil(weeks.length / 16))
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', display: 'block' }}
+      role="img" aria-label="weekly P&L">
+      <line x1={0} x2={W} y1={zero} y2={zero} stroke="var(--grid)" />
+      {weeks.map((w, i) => {
+        const h = Math.max(1.5, (Math.abs(w.pnl) / max) * (plotH / 2))
+        const up = w.pnl >= 0
+        return (
+          <g key={w.key}>
+            <rect x={i * bw + bw * 0.15} width={bw * 0.7}
+              y={up ? zero - h : zero} height={h} rx="1.5"
+              fill={up ? '#1baf7a' : '#e34948'} opacity="0.9">
+              <title>{`W${w.week} (${w.range}): ${w.pnl < 0 ? '-' : ''}$${Math.abs(w.pnl).toFixed(2)} · ${w.trades.length} trades`}</title>
+            </rect>
+            {i % labelEvery === 0 && (
+              <text x={i * bw + bw / 2} y={H - 8} textAnchor="middle"
+                fontSize="10" fill="var(--muted)">W{w.week}</text>
+            )}
+          </g>
+        )
+      })}
+    </svg>
+  )
+}
 
 const CLASSES = [
   ['all', 'All'],
@@ -119,6 +153,28 @@ export default function Journal() {
     return [...map.values()].sort((a, b) => b.key.localeCompare(a.key))
   }, [doc, cls])
 
+  // one chart group per year: weekly P&L bars + cumulative P&L trade by trade
+  const years = useMemo(() => {
+    if (!weeks) return null
+    const byYear = new Map()
+    for (const w of [...weeks].sort((a, b) => a.key.localeCompare(b.key))) {
+      if (!byYear.has(w.year)) {
+        byYear.set(w.year, { year: w.year, weeks: [], trades: [] })
+      }
+      const y = byYear.get(w.year)
+      y.weeks.push(w)
+      y.trades.push(...w.trades)
+    }
+    for (const y of byYear.values()) {
+      y.trades.sort((a, b) => a.entry_ts.localeCompare(b.entry_ts))
+      let cum = 0
+      y.cum = y.trades.filter((t) => t.pnl_usd != null)
+        .map((t) => ({ t: t.entry_ts, v: cum += t.pnl_usd }))
+      y.total = cum
+    }
+    return [...byYear.values()].sort((a, b) => b.year - a.year)
+  }, [weeks])
+
   if (err) return <div className="card"><span className="neg">{err}</span></div>
   if (!doc) {
     return (
@@ -173,6 +229,22 @@ export default function Journal() {
         <div className="card"><span className="hint">no trades in scope</span></div>
       )}
 
+      {years?.map((y) => (
+        <div className="card" key={y.year}>
+          <h3>{y.year} — weekly P&amp;L and cumulative</h3>
+          <p className="hint" style={{ marginTop: 4 }}>
+            {y.trades.length} trades · year P&amp;L <Money v={y.total} /> ·
+            bars = P&amp;L per week, line = running total after every trade
+          </p>
+          <WeekBars weeks={y.weeks} />
+          {y.cum.length > 1 && (
+            <Line yLabel="cumulative P&L (USD)" height={200} series={[
+              { name: 'cumulative P&L $', color: 'var(--series-1)', points: y.cum },
+            ]} />
+          )}
+        </div>
+      ))}
+
       {visible.map((w) => (
         <div className="card" key={w.key}>
           <h3>
@@ -210,8 +282,9 @@ export default function Journal() {
                     <td className="txt">{t.exit_ts ? fmtTime(t.exit_ts, MEL) : 'open'}</td>
                     <td>{t.exit_price ?? '—'}</td>
                     <td><Money v={t.pnl_usd} /></td>
-                    <td>{t.return_pct != null
-                      ? <span className={t.return_pct >= 0 ? 'pos' : 'neg'}>{num(t.return_pct, 2)}%</span>
+                    <td>{(t.net_return_pct ?? t.return_pct) != null
+                      ? <span className={(t.net_return_pct ?? t.return_pct) >= 0 ? 'pos' : 'neg'}>
+                        {num(t.net_return_pct ?? t.return_pct, 2)}%</span>
                       : '—'}</td>
                     <td>{t._concurrent > 1
                       ? <b>{t._concurrent}</b>

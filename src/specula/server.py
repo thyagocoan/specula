@@ -231,20 +231,36 @@ def _run_trades(run_id: str) -> list[dict]:
     if run_id in _trades_cache:
         return _trades_cache[run_id]
     from specula.backtest import build_portfolio
+    from specula.settings import get_settings
 
     cfg = runlog.get_cfg(run_id)
     pf = build_portfolio(cfg)
     idx = pf.wrapper.index
+    sym = cfg.get("symbol", "")
+    s = get_settings()
+    crypto = sym.endswith(("USDT", "USDC"))
+    size = (s["trade_size_crypto_usd"] if crypto
+            else s["trade_size_stock_usd"]) or 1000
+    fee_now = (s["fee_crypto_pct"] if crypto else s["fee_stock_pct"]) / 100.0
+    fee_run = float(cfg.get("fee") or 0.0)
+    # runs are logged at their sweep's fee scenario; restate returns at the
+    # user's current venue fee (entry + exit sides)
+    fee_adj_pct = 200.0 * (fee_now - fee_run)
     out = []
     for r in pf.trades.records.to_dict("records"):
         closed = int(r["status"]) == 1
+        ret = round(100 * float(r["return"]), 3) if closed else None
+        net = round(ret - fee_adj_pct, 3) if closed else None
         out.append({
             "entry_ts": idx[int(r["entry_idx"])].isoformat(),
             "exit_ts": idx[int(r["exit_idx"])].isoformat() if closed else None,
             "side": "long" if int(r["direction"]) == 0 else "short",
             "entry_price": round(float(r["entry_price"]), 6),
             "exit_price": round(float(r["exit_price"]), 6) if closed else None,
-            "return_pct": round(100 * float(r["return"]), 3) if closed else None,
+            "return_pct": ret,
+            "net_return_pct": net,
+            "size_usd": size,
+            "pnl_usd": round(size * net / 100, 2) if closed else None,
             "status": "closed" if closed else "open",
         })
     if len(_trades_cache) > 400:
@@ -303,16 +319,9 @@ def get_journal(limit_symbols: int = 20):
     trades = []
     for r in chosen.to_dict("records"):
         sym = r["symbol"]
-        size = (s["trade_size_crypto_usd"] if sym.endswith(("USDT", "USDC"))
-                else s["trade_size_stock_usd"]) or 1000
         try:
             for t in _run_trades(r["run_id"]):
-                t = dict(t)
-                t["symbol"] = sym
-                t["size_usd"] = size
-                t["pnl_usd"] = (round(t["return_pct"] / 100 * size, 2)
-                                if t["return_pct"] is not None else None)
-                trades.append(t)
+                trades.append({**t, "symbol": sym})
         except Exception as e:
             print(f"[journal] {sym}: {type(e).__name__}: {e}", flush=True)
     trades.sort(key=lambda t: t["entry_ts"])

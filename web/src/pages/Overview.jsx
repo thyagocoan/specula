@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import Area from '../components/Area.jsx'
 import CandleChart from '../components/CandleChart.jsx'
-import Line from '../components/Line.jsx'
 import { Pf, Ret, Th, sortRows } from '../components/bits.jsx'
 import { groupSetups, isCrypto, num } from '../data.js'
 
@@ -18,26 +16,11 @@ const PERIODS = [
   ['1', 'Day', 1],
 ]
 
-function slicedRebased(points, days) {
-  if (!points?.length) return null
-  let pts = points
-  if (days != null) {
-    const maxT = Date.parse(points[points.length - 1].t)
-    const cutoff = maxT - days * 86400e3
-    pts = points.filter((p) => Date.parse(p.t) >= cutoff)
-  }
-  if (pts.length < 2) return null
-  const base = pts[0].v
-  return pts.map((p) => ({ t: p.t, v: p.v / base }))
-}
-
-function drawdown(points) {
-  let peak = -Infinity
-  return points.map((p) => {
-    peak = Math.max(peak, p.v)
-    return { t: p.t, v: p.v / peak - 1 }
-  })
-}
+const Money = ({ v }) => v == null ? '—' : (
+  <span className={v >= 0 ? 'pos' : 'neg'}>
+    {v < 0 ? '-' : ''}${Math.abs(v).toFixed(2)}
+  </span>
+)
 
 // out-of-sample trades + P&L for one symbol within the selected period,
 // from the walk-forward equity curve (one point per stitched OOS trade)
@@ -79,49 +62,6 @@ function wfPeriod(wf, symbol, days) {
     trades: pts.length,
     pnl: 100 * (pts[pts.length - 1].v / pts[0].v - 1),
   }
-}
-
-function ReportPanel({ symbol, curves, days }) {
-  const c = curves?.curves?.[symbol]
-  const strat = useMemo(() => slicedRebased(c?.points, days), [c, days])
-  const bench = useMemo(() => slicedRebased(c?.bench, days), [c, days])
-  const dd = useMemo(() => (strat ? drawdown(strat) : null), [strat])
-
-  if (!strat) {
-    return (
-      <div className="card">
-        <h3>{symbol} — best setup vs buy &amp; hold</h3>
-        <p className="hint">no curve data for this asset/period yet</p>
-      </div>
-    )
-  }
-  return (
-    <div className="card">
-      <h3>{symbol} — best setup vs buy &amp; hold</h3>
-      {c && <p className="hint" style={{ margin: '0 0 6px' }}>{c.label} · in-sample</p>}
-      <div style={{ marginBottom: 6 }}>
-        <span className="chip">
-          <span className="dot" style={{ background: 'var(--series-1)' }} />
-          strategy: <Ret v={100 * (strat[strat.length - 1].v - 1)} />
-        </span>
-        {bench && (
-          <span className="chip">
-            <span className="dot" style={{ background: 'var(--series-2)' }} />
-            buy &amp; hold: <Ret v={100 * (bench[bench.length - 1].v - 1)} />
-          </span>
-        )}
-        <span className="chip">
-          max DD: <b style={{ marginLeft: 4 }}>
-            {(100 * Math.min(...dd.map((p) => p.v))).toFixed(1)}%</b>
-        </span>
-      </div>
-      <Line yLabel="equity multiple" height={240} series={[
-        { name: 'strategy', color: 'var(--series-1)', points: strat },
-        ...(bench ? [{ name: 'buy & hold', color: 'var(--series-2)', points: bench }] : []),
-      ]} />
-      <Area points={dd} height={120} />
-    </div>
-  )
 }
 
 const CHART_TF = { 1: '5min', 7: '30min', 30: '2h', all: '1d' }
@@ -170,6 +110,7 @@ function SetupCurve({ runId, days, symbol, onClose }) {
     const m = []
     for (const t of windowTrades) {
       const long = t.side === 'long'
+      const ret = t.net_return_pct ?? t.return_pct
       m.push({
         time: Math.floor(Date.parse(t.entry_ts) / 1000),
         position: long ? 'belowBar' : 'aboveBar',
@@ -181,16 +122,29 @@ function SetupCurve({ runId, days, symbol, onClose }) {
         m.push({
           time: Math.floor(Date.parse(t.exit_ts) / 1000),
           position: long ? 'aboveBar' : 'belowBar',
-          color: (t.return_pct ?? 0) >= 0 ? '#1baf7a' : '#e34948',
+          color: (ret ?? 0) >= 0 ? '#1baf7a' : '#e34948',
           shape: 'circle',
-          text: `${t.return_pct > 0 ? '+' : ''}${t.return_pct?.toFixed(2)}%`,
+          text: `${ret > 0 ? '+' : ''}${ret?.toFixed(2)}%`,
         })
       }
     }
     return m
   }, [windowTrades])
 
-  const strat = useMemo(() => slicedRebased(pl?.points, days), [pl, days])
+  // compound the stake trade by trade: each trade reinvests the running
+  // balance, so the next trade uses the result of the previous P&L
+  const ledger = useMemo(() => {
+    if (!windowTrades?.length) return null
+    const start = windowTrades[0].size_usd ?? 1000
+    let equity = start
+    const rows = windowTrades.map((t) => {
+      const stake = equity
+      const pnl = t.net_return_pct != null ? stake * t.net_return_pct / 100 : null
+      if (pnl != null) equity += pnl
+      return { ...t, stake, pnl, equity }
+    })
+    return { rows, start, final: equity }
+  }, [windowTrades])
 
   return (
     <div className="card">
@@ -205,18 +159,23 @@ function SetupCurve({ runId, days, symbol, onClose }) {
       {candles && (
         <>
           <div style={{ marginBottom: 6 }}>
-            {strat && (
-              <span className="chip">setup P&L in period:{' '}
-                <Ret v={100 * (strat[strat.length - 1].v - 1)} /></span>
-            )}
             <span className="chip">
               triggers in period: <b style={{ marginLeft: 4 }}>{windowTrades?.length ?? 0}</b>
             </span>
+            {ledger && (
+              <span className="chip">net P&L in period:{' '}
+                <Money v={ledger.final - ledger.start} />{' '}
+                <span className="hint">on ${num(ledger.start, 0)} start,
+                  compounded, {crypto ? 'Binance' : 'IBKR'} fees</span>
+              </span>
+            )}
           </div>
           <CandleChart candles={candles} markers={markers} />
           <h3 style={{ marginTop: 14 }}>Trigger log{' '}
             <span className="hint">(cross-check in TradingView — market time is
-              {crypto ? ' UTC' : ' New York'})</span></h3>
+              {crypto ? ' UTC' : ' New York'} · P&L is net of{' '}
+              {crypto ? 'Binance' : 'IBKR'} fees · each trade stakes the
+              running balance)</span></h3>
           <table className="grid">
             <thead>
               <tr>
@@ -224,11 +183,12 @@ function SetupCurve({ runId, days, symbol, onClose }) {
                 <th className="txt">Entry ({crypto ? 'UTC' : 'New York'})</th>
                 <th className="txt">Side</th><th>Entry px</th>
                 <th className="txt">Exit ({crypto ? 'UTC' : 'New York'})</th>
-                <th>Exit px</th><th>P&L</th>
+                <th>Exit px</th><th>Stake $</th><th>P&L %</th>
+                <th>P&L $</th><th>Balance $</th>
               </tr>
             </thead>
             <tbody>
-              {(windowTrades || []).slice().reverse().slice(0, 100).map((t, i) => (
+              {(ledger?.rows || []).slice().reverse().slice(0, 100).map((t, i) => (
                 <tr key={i}>
                   <td className="txt">{fmtTime(t.entry_ts, 'Australia/Melbourne')}</td>
                   <td className="txt">{fmtTime(t.entry_ts, marketTz)}</td>
@@ -236,10 +196,29 @@ function SetupCurve({ runId, days, symbol, onClose }) {
                   <td>{t.entry_price}</td>
                   <td className="txt">{t.exit_ts ? fmtTime(t.exit_ts, marketTz) : 'open'}</td>
                   <td>{t.exit_price ?? '—'}</td>
-                  <td>{t.return_pct != null ? <Ret v={t.return_pct} /> : '—'}</td>
+                  <td>{num(t.stake, 2)}</td>
+                  <td>{t.net_return_pct != null ? <Ret v={t.net_return_pct} /> : '—'}</td>
+                  <td><Money v={t.pnl} /></td>
+                  <td>{num(t.equity, 2)}</td>
                 </tr>
               ))}
             </tbody>
+            {ledger && (
+              <tfoot>
+                <tr>
+                  <td className="txt" colSpan={6}>
+                    <b>Total — {ledger.rows.length} trades, started
+                      ${num(ledger.start, 0)}</b>
+                  </td>
+                  <td />
+                  <td>
+                    <Ret v={100 * (ledger.final / ledger.start - 1)} />
+                  </td>
+                  <td><Money v={ledger.final - ledger.start} /></td>
+                  <td><b>{num(ledger.final, 2)}</b></td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </>
       )}
@@ -247,7 +226,7 @@ function SetupCurve({ runId, days, symbol, onClose }) {
   )
 }
 
-function AssetReview({ symbol, runs, wf, curves, days }) {
+function AssetReview({ symbol, runs, wf, days }) {
   const [selectedRun, setSelectedRun] = useState(null)
   const setups = useMemo(
     () => groupSetups(runs.filter((r) => r.symbol === symbol))
@@ -296,8 +275,6 @@ function AssetReview({ symbol, runs, wf, curves, days }) {
         </div>
       )}
 
-      <ReportPanel symbol={symbol} curves={curves} days={days} />
-
       {selectedRun && (
         <SetupCurve runId={selectedRun} days={days} symbol={symbol}
           onClose={() => setSelectedRun(null)} />
@@ -310,7 +287,8 @@ function AssetReview({ symbol, runs, wf, curves, days }) {
           <thead>
             <tr>
               <th className="txt">Setup</th><th>Trades</th><th>Win %</th>
-              <th>PF @low fee</th><th>PF @high fee</th><th>Return</th><th>Max DD</th>
+              <th>PF @low fee</th><th>PF @high fee</th><th>Return</th>
+              <th>Max DD</th><th>Sharpe</th>
             </tr>
           </thead>
           <tbody>
@@ -326,6 +304,7 @@ function AssetReview({ symbol, runs, wf, curves, days }) {
                   <td><Pf v={s.pf_high} /></td>
                   <td><Ret v={s.total_return} /></td>
                   <td>{num(s.max_dd, 1)}%</td>
+                  <td>{num(s.sharpe, 2)}</td>
                 </tr>
               )
             })}
@@ -341,7 +320,6 @@ export default function Overview({ runs: allRuns, generatedAt, asset, setAsset }
   const [period, setPeriod] = useState('all')
   const [sort, setSort] = useState({ col: 'pf_low', dir: 'desc' })
   const [wf, setWf] = useState(null)
-  const [curves, setCurves] = useState(null)
 
   useEffect(() => {
     ;(async () => {
@@ -351,10 +329,6 @@ export default function Overview({ runs: allRuns, generatedAt, asset, setAsset }
           const d = await r.json()
           if (d.available) setWf(d)
         }
-      } catch { /* none yet */ }
-      try {
-        const r = await fetch('/data/curves.json')
-        if (r.ok) setCurves(await r.json())
       } catch { /* none yet */ }
     })()
   }, [])
@@ -436,8 +410,7 @@ export default function Overview({ runs: allRuns, generatedAt, asset, setAsset }
               ← all assets
             </button>
           </p>
-          <AssetReview symbol={asset} runs={tabRuns} wf={wf} curves={curves}
-            days={days} />
+          <AssetReview symbol={asset} runs={tabRuns} wf={wf} days={days} />
         </>
       ) : (
         <div className="card">
