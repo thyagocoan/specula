@@ -47,6 +47,24 @@ def pair_configs(setup_tf: str, exec_tf: str, symbol: str = "BTCUSDT",
         )
 
 
+def strategy_sig(params: dict) -> str:
+    """Asset/fee-independent identity of a strategy — byte-identical to the
+    web app's strategySig (JSON.stringify: no spaces, integral floats as
+    ints), so server- and browser-computed sigs interoperate."""
+    def canon(v):
+        if isinstance(v, dict):
+            return {k: canon(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [canon(x) for x in v]
+        if isinstance(v, float) and v.is_integer():
+            return int(v)
+        return v
+
+    p = {k: canon(v) for k, v in params.items() if k not in ("symbol", "fee")}
+    return (f"{p.get('strategy')}|"
+            f"{json.dumps(p, sort_keys=True, separators=(',', ':'))}")
+
+
 def cfg_label(cfg: dict, with_fee: bool = False) -> str:
     """Compact human label for a config (mirrors the web app's setupLabel)."""
     strategy = cfg.get("strategy")

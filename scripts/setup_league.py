@@ -17,6 +17,7 @@ Run: uv run python scripts/setup_league.py [--holdout-days 60]
 """
 
 import argparse
+import hashlib
 import json
 import math
 import sys
@@ -33,8 +34,9 @@ DROP_KEYS = {"symbol", "fee"}
 
 
 def _sig(params: dict) -> str:
-    p = {k: v for k, v in params.items() if k not in DROP_KEYS}
-    return f"{p.get('strategy')}|{json.dumps(p, sort_keys=True)}"
+    from specula.sweeps import strategy_sig
+
+    return strategy_sig(params)
 
 
 def _label(params: dict) -> str:
@@ -100,8 +102,9 @@ def universe() -> list[str]:
 
 
 def run_symbol(symbol: str, configs: list[dict], fees: dict) -> dict:
-    """One worker task: every candidate on one symbol (frames cached once)."""
-    from specula.backtest import build_portfolio
+    """One worker task: every candidate on one symbol (frames cached once).
+    Returns per config: the trade list AND full metrics for the registry."""
+    from specula.backtest import build_portfolio, collect_metrics
     from specula.data import is_equity
 
     fee = fees["stock"] if is_equity(symbol) else fees["crypto"]
@@ -117,7 +120,8 @@ def run_symbol(symbol: str, configs: list[dict], fees: dict) -> dict:
                     continue
                 ts = idx[int(r["entry_idx"])]
                 trades.append((int(ts.value), float(r["return"])))
-            res[c["sig"]] = trades
+            res[c["sig"]] = {"trades": trades, "cfg": cfg,
+                             "metrics": collect_metrics(pf)}
         except Exception as e:
             res[c["sig"]] = None
             print(f"[league] {symbol} {c['label']}: "
@@ -166,9 +170,14 @@ def main() -> None:
     print(f"[league] {len(configs)} configs x {len(symbols)} assets, "
           f"{workers} workers, holdout {args.holdout_days}d", flush=True)
 
+    from specula import runlog
+
     t0 = time.time()
+    sha = runlog.git_sha()
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     # sig -> symbol -> [(entry_ns, ret)]
     results: dict[str, dict[str, list]] = {c["sig"]: {} for c in configs}
+    reg_rows: list[dict] = []
     with ProcessPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(run_symbol, sym, configs, fees): sym
                 for sym in symbols}
@@ -177,15 +186,38 @@ def main() -> None:
             sym = futs[fut]
             done += 1
             try:
-                for sig, trades in fut.result().items():
-                    if trades is not None:
-                        results[sig][sym] = trades
+                for sig, payload in fut.result().items():
+                    if payload is None:
+                        continue
+                    results[sig][sym] = payload["trades"]
+                    cfg = payload["cfg"]
+                    # per-asset registry row with a DETERMINISTIC id, so a
+                    # league re-run replaces instead of duplicating — this is
+                    # what makes approved setups visible on every asset in
+                    # the portal (StrategyBoard, Setups, asset reviews)
+                    rid = hashlib.md5(
+                        f"league|{sig}|{sym}|{cfg['fee']}".encode()
+                    ).hexdigest()[:12]
+                    reg_rows.append({
+                        "run_id": rid, "created_at": now, "git_sha": sha,
+                        "sweep_tag": "setup-league-v1", "symbol": sym,
+                        "strategy": cfg.get("strategy"),
+                        "setup_tf": cfg.get("setup_tf"),
+                        "exec_tf": cfg.get("exec_tf"),
+                        "params": json.dumps(cfg, sort_keys=True),
+                        **payload["metrics"],
+                    })
             except Exception as e:
                 print(f"[league] {sym} failed: {type(e).__name__}: {e}",
                       flush=True)
             if done % 10 == 0 or done == len(symbols):
                 print(f"[league] step assets {done}/{len(symbols)} "
                       f"({(time.time() - t0) / 60:.1f} min)", flush=True)
+
+    if reg_rows:
+        runlog.append(reg_rows)
+        print(f"[league] logged {len(reg_rows)} per-asset runs to the "
+              f"registry (tag setup-league-v1)", flush=True)
 
     max_ns = max((t[0] for per in results.values() for tr in per.values()
                   for t in tr), default=None)

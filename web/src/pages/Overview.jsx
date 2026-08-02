@@ -386,7 +386,7 @@ function FavStrip({ favs, onOpen, onRemove }) {
         {favs.map((f) => (
           <span key={f.sig} className="chip" style={{ marginBottom: 6 }}>
             <a href="#" onClick={(e) => { e.preventDefault(); onOpen(f) }}>
-              ★ {f.label}
+              {f.status === 'approved' ? '✅' : '★'} {f.label}
             </a>
             <button className="btn ghost" title="remove favourite"
               style={{ marginLeft: 6, padding: '0 6px' }}
