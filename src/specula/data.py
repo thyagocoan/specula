@@ -10,6 +10,25 @@ DATA_ROOT = Path("data")
 EQUITY_SYMBOLS = {"NVDA", "AAPL", "GOOGL", "MSFT", "AMZN", "AVGO", "META", "TSLA",
                   "BRK.B", "LLY"}
 
+_equity_cache: set[str] | None = None
+
+
+def equity_symbols() -> set[str]:
+    """All equity symbols present in the lake (silver layer), plus the core set."""
+    global _equity_cache
+    if _equity_cache is None:
+        base = DATA_ROOT / "silver" / "equity_1m_adjusted"
+        found = (
+            {p.name.split("=", 1)[1] for p in base.glob("symbol=*")}
+            if base.exists() else set()
+        )
+        _equity_cache = found | EQUITY_SYMBOLS
+    return _equity_cache
+
+
+def is_equity(symbol: str) -> bool:
+    return symbol in equity_symbols()
+
 
 def load_crypto_1m(symbol: str = "BTCUSDT", data_root: Path = DATA_ROOT) -> pd.DataFrame:
     """Bronze 1m crypto bars as a UTC-indexed pandas OHLCV frame."""

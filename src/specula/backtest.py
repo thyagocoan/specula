@@ -7,7 +7,7 @@ import pandas as pd
 import vectorbt as vbt
 
 from specula import mtf
-from specula.data import (EQUITY_SYMBOLS, load_crypto_1m, load_equity_1m,
+from specula.data import (is_equity, load_crypto_1m, load_equity_1m,
                           resample_equity, resample_ohlcv)
 
 SLIPPAGE = 0.0001
@@ -22,7 +22,7 @@ _breakout_cache: dict[tuple, tuple] = {}
 def frames(symbol: str, tf: str) -> pd.DataFrame:
     key = (symbol, tf)
     if key not in _resample_cache:
-        if symbol in EQUITY_SYMBOLS:
+        if is_equity(symbol):
             _resample_cache[key] = resample_equity(
                 load_equity_1m(symbol, session="regular"), tf
             )
@@ -129,7 +129,7 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
         entries = entries & long_ok
         short_entries = short_entries & short_ok
 
-    if cfg["symbol"] in EQUITY_SYMBOLS:
+    if is_equity(cfg["symbol"]):
         # intraday only: flat by the close, no fresh entries near it
         ny = exec_df.index.tz_convert("America/New_York")
         day = pd.Series(ny.date, index=exec_df.index)

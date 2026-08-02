@@ -43,6 +43,10 @@ JOB_TYPES = {
         "label": "Re-export web data + reports",
         "cmd": [sys.executable, "scripts/export_web_data.py"],
     },
+    "daily_update": {
+        "label": "Daily data update (+walk-forward)",
+        "cmd": [sys.executable, "scripts/daily_update.py", "--with-backtests"],
+    },
 }
 
 JOBS: dict[str, dict] = {}

@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 from specula.backtest import build_portfolio
-from specula.data import EQUITY_SYMBOLS
+from specula.data import EQUITY_SYMBOLS, is_equity
 from specula.sweeps import EQUITY_FEES, FEES, TF_PAIRS, cfg_label, pair_configs
 
 TRAIN_DAYS = 120
@@ -46,7 +46,7 @@ DEFAULT_SYMBOLS = ["BTCUSDT"] + sorted(EQUITY_SYMBOLS)
 
 
 def fees_for(symbol: str) -> list[float]:
-    return EQUITY_FEES if symbol in EQUITY_SYMBOLS else FEES
+    return EQUITY_FEES if is_equity(symbol) else FEES
 
 
 def trade_table(cfg: dict) -> pd.DataFrame:

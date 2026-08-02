@@ -15,6 +15,7 @@ export default function Execute({ apiUp }) {
     { id: 'walkforward', label: 'Walk-forward validation (BTCUSDT)', desc: 'Rolling 120d train / 30d test over the full grid; the out-of-sample verdict.' },
     { id: 'rsi_filter', label: 'RSI filter analysis (FFFD)', desc: 'Multi-TF RSI at each entry: bucket diagnosis + hypothesis filters vs baseline.' },
     { id: 'export_web', label: 'Re-export web data', desc: 'Refresh runs.json and sync report HTMLs into the app.' },
+    { id: 'daily_update', label: 'Daily data update', desc: 'Pull latest bars for every symbol in the lake, rebuild, re-run walk-forward, refresh portal. Also runs nightly via Task Scheduler.' },
   ])
   const [selected, setSelected] = useState(null)
   const [error, setError] = useState(null)

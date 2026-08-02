@@ -116,6 +116,10 @@ def main() -> int:
 
     today = date.today()
     current_ym = today.strftime("%Y-%m")
+    prev_ym = (today.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    # always refetch the current and previous month: a month downloaded
+    # mid-month would otherwise stay incomplete forever after rollover
+    refetch = {current_ym, prev_ym}
     months = month_range(args.start, current_ym)
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
 
@@ -131,7 +135,7 @@ def main() -> int:
                 )
                 for ym in months:
                     dest = out_dir / f"{ym}.json.gz"
-                    if dest.exists() and ym != current_ym:
+                    if dest.exists() and ym not in refetch:
                         counts["skip"] += 1
                         continue
                     payload = fetch_month(client, base, symbol, ym, adjustment)
