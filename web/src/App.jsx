@@ -7,6 +7,7 @@ import Setups from './pages/Setups.jsx'
 import Runs from './pages/Runs.jsx'
 import WalkForward from './pages/WalkForward.jsx'
 import Execute from './pages/Execute.jsx'
+import Autotrade from './pages/Autotrade.jsx'
 
 const PAGES = [
   ['overview', 'Overview'],
@@ -15,6 +16,7 @@ const PAGES = [
   ['setups', 'Setups'],
   ['runs', 'Runs'],
   ['walkforward', 'Walk-forward'],
+  ['autotrade', 'Autotrade'],
   ['execute', 'Execute'],
 ]
 
@@ -85,6 +87,7 @@ export default function App() {
         {page === 'setups' && <Setups runs={runs} />}
         {page === 'runs' && <Runs runs={runs} />}
         {page === 'walkforward' && <WalkForward />}
+        {page === 'autotrade' && <Autotrade />}
         {page === 'execute' && <Execute apiUp={apiUp} />}
       </main>
     </div>

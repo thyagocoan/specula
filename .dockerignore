@@ -1,0 +1,12 @@
+data/
+reports/
+web/node_modules/
+web/dist/
+web/public/data/
+web/public/reports/
+.venv/
+.git/
+.env
+.claude/
+__pycache__/
+*.pyc

@@ -8,6 +8,7 @@ actions stay on the portal and, later, explicit commands.
 """
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -18,6 +19,8 @@ from pathlib import Path
 
 import anthropic
 from anthropic import beta_tool
+
+from specula import paper, runlog, scanner
 
 try:
     from zoneinfo import ZoneInfo
@@ -39,7 +42,7 @@ def local_time(ts_iso: str | None) -> str:
 
 DB = Path("data/meta/registry.sqlite")
 WF = Path("data/meta/walkforward.json")
-API = "http://127.0.0.1:8756"
+API = os.environ.get("SPECULA_API", "http://127.0.0.1:8756")
 MODEL = "claude-haiku-4-5"
 
 _client: anthropic.Anthropic | None = None
@@ -258,8 +261,10 @@ Rules:
 OUT-OF-SAMPLE walk-forward results, and remind the user OOS is what counts.
 - Be concise: short paragraphs or dash lists, plain text (no markdown tables, \
 no headers), suitable for a phone screen.
-- You are read-only for actions: if asked to trade, run jobs, or change \
-anything, say that actions happen via the portal, not chat.
+- You are read-only for actions in free text: trading configuration happens \
+via the portal Autotrade page or CLI; the only chat actions are the explicit \
+commands /pause and /resume (kill switch). Paper trading runs automatically \
+for roster assets; alerts arrive as [ARMED]/[PAPER OPEN]/[PAPER CLOSE].
 - You DO automatically push a Telegram alert whenever a background job \
 finishes (done or failed). If the user asks to be notified when work \
 completes, confirm it will happen automatically — no need to check back.
@@ -290,6 +295,52 @@ def send(text: str) -> None:
 def handle_command(cmd: str) -> str:
     if cmd.startswith("/progress"):
         return _progress_text()
+    if cmd.startswith("/assets"):
+        rows = runlog.autotrade_list()
+        if not rows:
+            return ("autotrade roster is empty. Enable assets with:\n"
+                    "uv run python scripts/autotrade.py enable SYMBOL\n"
+                    "(or the portal Autotrade page after the cutover)")
+        lines = ["Autotrade roster:"]
+        for r in rows:
+            lines.append(f"- {r['symbol']}: {'ON' if r['enabled'] else 'off'}, "
+                         f"${r['size_usd']:.0f}/trade")
+        lines.append(f"scanner: {'PAUSED' if scanner.is_paused() else 'active'}")
+        return "\n".join(lines)
+    if cmd.startswith("/positions"):
+        pos = paper.open_positions()
+        if not pos:
+            return "no open paper positions"
+        st = scanner._load_state()
+        lines = ["Open paper positions:"]
+        for p in pos:
+            last = st.get("symbols", {}).get(p["symbol"], {}).get("last_price")
+            upnl = ""
+            if last:
+                d = (last - p["entry_price"]) if p["side"] == "long" \
+                    else (p["entry_price"] - last)
+                upnl = f" | unrealized {d * p['qty']:+.2f} USD"
+            lines.append(f"- {p['symbol']} {p['side']} @ {p['entry_price']:.4f}"
+                         f" (sl {p['sl']}, tp {p['tp']}){upnl}")
+        return "\n".join(lines)
+    if cmd.startswith("/pnl"):
+        arg = cmd.split(maxsplit=1)[1].strip() if " " in cmd else "day"
+        days = {"day": 1, "week": 7, "month": 30}.get(arg, 1)
+        s = paper.pnl_summary(days=days)
+        lines = [f"Paper P&L last {arg}: {s['total_pnl_usd']:+.2f} USD over "
+                 f"{s['closed_trades']} closed trades"
+                 + (f" (win {s['win_rate_pct']}%)" if s["win_rate_pct"] is not None
+                    else "")]
+        for t in s["trades"][:8]:
+            lines.append(f"- {t['symbol']} {t['side']} {t['pnl_usd']:+.2f} USD "
+                         f"({t['reason']})")
+        return "\n".join(lines)
+    if cmd.startswith("/pause"):
+        scanner.set_paused(True)
+        return "scanner PAUSED - no new paper entries (open positions still managed)"
+    if cmd.startswith("/resume"):
+        scanner.set_paused(False)
+        return "scanner resumed"
     if cmd.startswith("/status"):
         s = json.loads(get_system_status.call({}))
         lines = [f"API: {s.get('api')}"]
@@ -325,7 +376,8 @@ def handle_command(cmd: str) -> str:
             lines.append(f"- {r['symbol']}: PF {r['oos_pf']}, "
                          f"{r['oos_return_pct']}% over {r['oos_trades']} trades")
         return "\n".join(lines)
-    return ("Commands: /status /progress /best [symbol] /wf [symbol] /help\n"
+    return ("Commands: /status /progress /best [symbol] /wf [symbol]\n"
+            "/assets /positions /pnl [day|week|month] /pause /resume\n"
             "Or just ask me anything about the system in plain language.")
 
 
@@ -378,8 +430,9 @@ def run(token: str, chat_id: str, client: anthropic.Anthropic) -> None:
     global _client, _tg_token, _chat_id
     _client, _tg_token, _chat_id = client, token, str(chat_id)
     threading.Thread(target=_job_watcher, daemon=True).start()
+    threading.Thread(target=scanner.run_loop, args=(send,), daemon=True).start()
     offset = 0
-    print("[bot] polling for messages, job watcher active", flush=True)
+    print("[bot] polling for messages; job watcher + scanner active", flush=True)
     while True:
         try:
             updates = tg("getUpdates", offset=offset, timeout=50)

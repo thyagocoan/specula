@@ -68,12 +68,21 @@ def main() -> int:
     failures += not run("quality report", ["scripts/quality_report.py"])
 
     if args.with_backtests:
-        failures += not run("walk-forward", ["scripts/walkforward.py"])
+        # ingest covers ALL assets above; reprocessing is scoped to the
+        # autotrade roster when one exists (else the core defaults)
+        from specula import runlog
+        roster = runlog.autotrade_symbols()
+        wf_args = ["--symbols", ",".join(roster)] if roster else []
+        if roster:
+            print(f"[scope] reprocessing autotrade roster: {','.join(roster)}",
+                  flush=True)
+        failures += not run("walk-forward",
+                            ["scripts/walkforward.py", *wf_args])
         if Path("data/meta/lab_candidates.json").exists():
             failures += not run(
                 "walk-forward (lab candidates)",
                 ["scripts/walkforward.py", "--candidates",
-                 "data/meta/lab_candidates.json"],
+                 "data/meta/lab_candidates.json", *wf_args],
             )
         failures += not run("equity curves", ["scripts/export_curves.py"])
 

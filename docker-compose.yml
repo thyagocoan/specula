@@ -1,0 +1,24 @@
+services:
+  specula:
+    build: .
+    ports:
+      - "8756:8756"
+    env_file: .env
+    environment:
+      - SPECULA_SCHEDULER=1
+    volumes:
+      - ./data:/app/data
+      - ./reports:/app/reports
+    restart: unless-stopped
+
+  bot:
+    build: .
+    command: ["uv", "run", "--no-sync", "python", "scripts/telegram_bot.py"]
+    env_file: .env
+    environment:
+      - SPECULA_API=http://specula:8756
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - specula
+    restart: unless-stopped

@@ -160,11 +160,14 @@ def evaluate_scenario(candidates: list[dict], folds: list[dict]) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS))
+    ap.add_argument("--symbols", default="",
+                    help="comma list; default = core symbols (grid mode) or "
+                         "all candidate symbols (candidates mode)")
     ap.add_argument("--candidates", default=None,
                     help="lab_candidates.json — evaluate these cfgs instead of "
                          "the built-in grid; results keyed '<symbol>·lab'")
     args = ap.parse_args()
+    sym_filter = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
 
     t0 = time.monotonic()
     label_suffix = ""
@@ -173,6 +176,8 @@ def main() -> int:
         sym_cfgs: dict[str, list[dict]] = {}
         for c in cand["candidates"]:
             for s in c["symbols"]:
+                if sym_filter and s.upper() not in sym_filter:
+                    continue
                 for fee in fees_for(s):
                     cfg = json.loads(json.dumps(c["cfg"]))
                     cfg.update(symbol=s, exec_tf="1min", fee=fee)
@@ -186,7 +191,7 @@ def main() -> int:
         print(f"candidates mode: {len(symbols)} symbols, "
               f"{sum(len(v) for v in sym_cfgs.values())} cfgs", flush=True)
     else:
-        symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        symbols = sym_filter or DEFAULT_SYMBOLS
         tasks = [(s, list(pair_configs(*p, symbol=s, fees=fees_for(s))))
                  for s in symbols for p in TF_PAIRS]
     workers = max(1, (os.cpu_count() or 4) - 2)

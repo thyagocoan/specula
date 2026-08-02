@@ -8,6 +8,7 @@ Start from the repo root:
 """
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -15,11 +16,14 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from specula import runlog
 
+load_dotenv()
 app = FastAPI(title="specula-api")
 
 JOB_TYPES = {
@@ -138,5 +142,78 @@ def get_walkforward():
     return {"available": True, **json.loads(WALKFORWARD_JSON.read_text(encoding="utf-8"))}
 
 
+class AutotradeUpdate(BaseModel):
+    symbol: str
+    enabled: bool
+    size_usd: float | None = None
+    force: bool = False
+
+
+def _oos_pf(symbol: str) -> float | None:
+    if not WALKFORWARD_JSON.exists():
+        return None
+    wf = json.loads(WALKFORWARD_JSON.read_text(encoding="utf-8"))
+    best = None
+    for d in wf.get("symbols", []):
+        if d["symbol"].split("·")[0] != symbol:
+            continue
+        for s in d["scenarios"][:1]:
+            pf = s["aggregate"].get("oos_pf")
+            if pf is not None and (best is None or pf > best):
+                best = pf
+    return best
+
+
+@app.get("/api/autotrade")
+def autotrade_list():
+    rows = runlog.autotrade_list()
+    for r in rows:
+        r["oos_pf"] = _oos_pf(r["symbol"])
+    return rows
+
+
+@app.post("/api/autotrade")
+def autotrade_update(u: AutotradeUpdate):
+    sym = u.symbol.upper()
+    if u.enabled and not u.force:
+        pf = _oos_pf(sym)
+        if pf is None or pf <= 1.0:
+            raise HTTPException(
+                400, f"{sym} has no positive out-of-sample verdict "
+                     f"(OOS PF: {pf}) — pass force=true to override")
+    runlog.autotrade_set(sym, enabled=u.enabled, size_usd=u.size_usd)
+    return {"ok": True, "symbol": sym, "enabled": u.enabled}
+
+
+# ------------------------------------------------------- scheduler (container)
+
+def _scheduled(job_type: str) -> None:
+    if any(j["status"] == "running" for j in JOBS.values()):
+        print(f"[scheduler] skip {job_type}: another job is running", flush=True)
+        return
+    try:
+        start_job(job_type)
+        print(f"[scheduler] launched {job_type}", flush=True)
+    except Exception as e:
+        print(f"[scheduler] {job_type} failed to launch: {e}", flush=True)
+
+
+if os.environ.get("SPECULA_SCHEDULER") == "1":
+    from apscheduler.schedulers.background import BackgroundScheduler
+
+    _sched = BackgroundScheduler(timezone="Australia/Melbourne")
+    _sched.add_job(lambda: _scheduled("daily_update"), "cron",
+                   hour=22, minute=15, id="nightly")
+    _sched.add_job(lambda: _scheduled("overnight_lab"), "cron",
+                   day_of_week="sat", hour=1, minute=0, id="weekly_lab")
+    _sched.start()
+    print("[scheduler] active: nightly 22:15, weekly lab Sat 01:00 "
+          "(Australia/Melbourne)", flush=True)
+
+
 Path("reports").mkdir(exist_ok=True)
 app.mount("/reports", StaticFiles(directory="reports"), name="reports")
+
+# serve the built SPA when present (Docker image / `npm run build`)
+if Path("web/dist/index.html").exists():
+    app.mount("/", StaticFiles(directory="web/dist", html=True), name="spa")

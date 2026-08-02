@@ -1,6 +1,7 @@
 """Config grids for sweeps — shared by sweep scripts and walk-forward."""
 
 import itertools
+import json
 
 FEES = [0.0004, 0.001]          # crypto: futures taker / spot taker
 EQUITY_FEES = [0.0001, 0.0005]  # equities: zero-commission, cost is spread (1bp / 5bp)
@@ -41,18 +42,32 @@ def pair_configs(setup_tf: str, exec_tf: str, symbol: str = "BTCUSDT",
 
 def cfg_label(cfg: dict, with_fee: bool = False) -> str:
     """Compact human label for a config (mirrors the web app's setupLabel)."""
-    if cfg["strategy"] == "didi":
-        bits = [f"Didi {cfg['setup_tf']}→{cfg['exec_tf']}"]
+    strategy = cfg.get("strategy")
+    if strategy == "didi":
+        bits = [f"Didi {cfg.get('setup_tf')}→{cfg.get('exec_tf')}"]
         if cfg.get("adx_filter"):
             bits.append("ADX")
-        bits += [f"sl {cfg['sl'] * 100:g}%", f"tp {cfg['tp'] * 100:g}%"]
-    else:
+        bits += [f"sl {cfg.get('sl', 0) * 100:g}%", f"tp {cfg.get('tp', 0) * 100:g}%"]
+    elif strategy == "fffd":
         bits = [
-            f"FFFD {cfg['setup_tf']}→{cfg['exec_tf']}",
+            f"FFFD {cfg.get('setup_tf')}→{cfg.get('exec_tf')}",
             "strict" if cfg.get("strict") else "loose",
-            f"dev {cfg['dev']}",
-            str(cfg["target"]),
+            f"dev {cfg.get('dev')}",
+            str(cfg.get("target")),
         ]
-    if with_fee:
+    elif strategy == "lab":
+        entry = cfg.get("entry", {})
+        exit_spec = cfg.get("exit", {})
+        bits = [f"{entry.get('kind', '?')} {cfg.get('setup_tf')}→{cfg.get('exec_tf')}"]
+        bits += [f"{k} {v}" for k, v in entry.items() if k != "kind"]
+        ex = f"exit {exit_spec.get('kind', '?')}"
+        for k in ("sl", "tp", "max_bars"):
+            if exit_spec.get(k) is not None:
+                ex += f" {k}={exit_spec[k]}"
+        bits.append(ex)
+    else:
+        bits = [json.dumps({k: v for k, v in cfg.items() if k != "fee"},
+                           sort_keys=True)[:70]]
+    if with_fee and cfg.get("fee") is not None:
         bits.append(f"fee {cfg['fee'] * 100:.2f}%")
     return " · ".join(bits)

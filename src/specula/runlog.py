@@ -83,10 +83,57 @@ def _connect() -> sqlite3.Connection:
     con = sqlite3.connect(DB, timeout=60)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute(_SCHEMA)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS autotrade (
+            symbol TEXT PRIMARY KEY,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            cfg TEXT,
+            size_usd REAL DEFAULT 1000,
+            added_at TEXT
+        )
+    """)
     for col in ("symbol", "sweep_tag", "profit_factor"):
         con.execute(f"CREATE INDEX IF NOT EXISTS idx_runs_{col} ON runs({col})")
     _migrate_legacy(con)
     return con
+
+
+# ------------------------------------------------------------ autotrade roster
+
+def autotrade_list() -> list[dict]:
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT symbol, enabled, cfg, size_usd, added_at FROM autotrade "
+            "ORDER BY symbol").fetchall()
+    finally:
+        con.close()
+    return [{"symbol": r[0], "enabled": bool(r[1]),
+             "cfg": json.loads(r[2]) if r[2] else None,
+             "size_usd": r[3], "added_at": r[4]} for r in rows]
+
+
+def autotrade_symbols() -> list[str]:
+    return [r["symbol"] for r in autotrade_list() if r["enabled"]]
+
+
+def autotrade_set(symbol: str, enabled: bool = True, cfg: dict | None = None,
+                  size_usd: float | None = None) -> None:
+    con = _connect()
+    try:
+        con.execute(
+            "INSERT INTO autotrade (symbol, enabled, cfg, size_usd, added_at) "
+            "VALUES (?, ?, ?, COALESCE(?, 1000), ?) "
+            "ON CONFLICT(symbol) DO UPDATE SET enabled=excluded.enabled, "
+            "cfg=COALESCE(excluded.cfg, autotrade.cfg), "
+            "size_usd=COALESCE(?, autotrade.size_usd)",
+            (symbol.upper(), int(enabled),
+             json.dumps(cfg, sort_keys=True) if cfg else None, size_usd,
+             datetime.now(timezone.utc).isoformat(timespec="seconds"), size_usd),
+        )
+        con.commit()
+    finally:
+        con.close()
 
 
 def _migrate_legacy(con: sqlite3.Connection) -> None:
