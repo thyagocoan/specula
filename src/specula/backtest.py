@@ -15,8 +15,14 @@ from specula.settings import get_settings
 SLIPPAGE = 0.0001
 _SETTINGS = get_settings()
 INIT_CASH = _SETTINGS["capital_usd"]
-TRADE_SIZE_USD = _SETTINGS["trade_size_usd"]  # 0 = full capital per trade
 EOD_ENTRY_CUTOFF_MIN = 15 * 60 + 45  # no new entries from 15:45 ET
+
+
+def trade_size_for(symbol: str) -> float:
+    """Configured USD size per trade for the symbol's asset class (0 = all-in)."""
+    key = ("trade_size_crypto_usd" if symbol.endswith(("USDT", "USDC"))
+           else "trade_size_stock_usd")
+    return float(_SETTINGS.get(key, 0.0))
 
 _resample_cache: dict[tuple[str, str], pd.DataFrame] = {}
 _signal_cache: dict[tuple, object] = {}
@@ -186,8 +192,9 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
         short_exits = short_exits | eod
 
     size_kwargs = {}
-    if TRADE_SIZE_USD > 0:
-        size_kwargs = {"size": TRADE_SIZE_USD, "size_type": "value"}
+    trade_size = trade_size_for(cfg["symbol"])
+    if trade_size > 0:
+        size_kwargs = {"size": trade_size, "size_type": "value"}
     return vbt.Portfolio.from_signals(
         close=exec_df["close"],
         entries=entries,

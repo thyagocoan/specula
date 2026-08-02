@@ -278,7 +278,8 @@ class SettingsUpdate(BaseModel):
     fee_crypto_pct: float | None = None
     fee_stock_pct: float | None = None
     capital_usd: float | None = None
-    trade_size_usd: float | None = None
+    trade_size_crypto_usd: float | None = None
+    trade_size_stock_usd: float | None = None
 
 
 @app.get("/api/settings")

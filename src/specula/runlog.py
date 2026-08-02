@@ -119,6 +119,12 @@ def autotrade_symbols() -> list[str]:
 
 def autotrade_set(symbol: str, enabled: bool = True, cfg: dict | None = None,
                   size_usd: float | None = None) -> None:
+    if size_usd is None:
+        from specula.settings import get_settings
+        s = get_settings()
+        size_usd = (s["trade_size_crypto_usd"]
+                    if symbol.upper().endswith(("USDT", "USDC"))
+                    else s["trade_size_stock_usd"]) or 1000
     con = _connect()
     try:
         con.execute(

@@ -12,10 +12,13 @@ from pathlib import Path
 PATH = Path("data/meta/settings.json")
 
 DEFAULTS = {
-    "fee_crypto_pct": 0.04,   # per side, percent (0.04 = 0.04%)
-    "fee_stock_pct": 0.01,
+    # user's venues: Binance for crypto (spot taker), IBKR Pro tiered for
+    # US stocks ($0.35 min on $1k trades = 0.035%/side)
+    "fee_crypto_pct": 0.10,   # per side, percent (0.10 = 0.10%)
+    "fee_stock_pct": 0.035,
     "capital_usd": 100_000.0,
-    "trade_size_usd": 0.0,    # 0 = invest full available capital per trade
+    "trade_size_crypto_usd": 100.0,   # 0 = full capital per trade
+    "trade_size_stock_usd": 1000.0,
 }
 
 

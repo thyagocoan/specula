@@ -38,17 +38,19 @@ function SettingsCard() {
     <div className="card">
       <h3>Backtest &amp; trading settings</h3>
       <div className="filters">
-        {field('fee_crypto_pct', 'crypto fee %/side', 0.01)}
-        {field('fee_stock_pct', 'stock fee %/side', 0.005)}
+        {field('fee_crypto_pct', 'crypto fee %/side (Binance)', 0.01)}
+        {field('fee_stock_pct', 'stock fee %/side (IBKR)', 0.005)}
         {field('capital_usd', 'capital (USD)', 1000)}
-        {field('trade_size_usd', 'size per trade (USD, 0 = all-in)', 100)}
+        {field('trade_size_crypto_usd', 'crypto size/trade (USD)', 50)}
+        {field('trade_size_stock_usd', 'stock size/trade (USD)', 100)}
         <button className="btn" onClick={save}>Save</button>
       </div>
       <p className="hint">
-        Backtests run two fee scenarios: your fee and a 2.5× stressed fee (the
-        two PF columns across the portal). Nightly reprocessing, sweeps, curve
-        and trigger views all pick these up; already-logged registry rows keep
-        the fee they were run with.
+        Venues: Binance for crypto, Interactive Brokers for stocks. Backtests
+        run two fee scenarios: your fee and a 2.5× stressed fee (the two PF
+        columns across the portal). Nightly reprocessing, sweeps, curve and
+        trigger views all pick these up; already-logged registry rows keep
+        the fee they were run with. Size 0 = invest full capital per trade.
       </p>
       {saved && <p className={saved.ok ? 'pos' : 'neg'}>{saved.text}</p>}
     </div>
