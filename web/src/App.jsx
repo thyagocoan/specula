@@ -2,8 +2,6 @@ import { useEffect, useState } from 'react'
 import { loadRuns } from './data.js'
 import Overview from './pages/Overview.jsx'
 import ResearchFlow from './pages/ResearchFlow.jsx'
-import Assets from './pages/Assets.jsx'
-import Setups from './pages/Setups.jsx'
 import Runs from './pages/Runs.jsx'
 import WalkForward from './pages/WalkForward.jsx'
 import Execute from './pages/Execute.jsx'
@@ -14,10 +12,8 @@ import League from './pages/League.jsx'
 const PAGES = [
   ['overview', 'Overview'],
   ['flow', 'Research Flow'],
-  ['assets', 'Assets'],
+  ['league', 'Setups'],
   ['journal', 'Journal'],
-  ['setups', 'Setups'],
-  ['league', 'League'],
   ['runs', 'Runs'],
   ['walkforward', 'Walk-forward'],
   ['autotrade', 'Autotrade'],
@@ -88,14 +84,7 @@ export default function App() {
             asset={reviewAsset} setAsset={setReviewAsset} />
         )}
         {page === 'flow' && <ResearchFlow runs={runs} />}
-        {page === 'assets' && (
-          <Assets runs={runs} onReview={(s) => {
-            setReviewAsset(s)
-            setPage('overview')
-          }} />
-        )}
         {page === 'journal' && <Journal />}
-        {page === 'setups' && <Setups runs={runs} />}
         {page === 'league' && <League />}
         {page === 'runs' && <Runs runs={runs} />}
         {page === 'walkforward' && <WalkForward />}

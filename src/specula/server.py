@@ -330,21 +330,89 @@ def get_trades(run_id: str):
         raise HTTPException(404, f"run {run_id} not found")
 
 
-_journal_cache: dict = {"key": None, "doc": None}
+_journal_cache: dict = {}
+
+
+def _journal_approved(sig: str, limit_symbols: int) -> dict:
+    """Journal feed for League-approved setups: each approved setup on its
+    top assets (by PF among the league's per-asset registry rows)."""
+    from specula.sweeps import strategy_sig
+
+    approved = [f for f in runlog.fav_setups_list()
+                if f["status"] == "approved" and f["params"]]
+    if sig != "all":
+        approved = [f for f in approved if f["sig"] == sig]
+    if not approved:
+        raise HTTPException(404, "no approved setups — approve some on the "
+                                 "League page first")
+
+    df = runlog.load()
+    df = df[(df["sweep_tag"] == "setup-league-v1")
+            & df["profit_factor"].notna()]
+    want = {f["sig"]: f for f in approved}
+    by_sig: dict[str, list] = {}
+    for r in df.to_dict("records"):
+        rsig = strategy_sig(json.loads(r["params"]))
+        if rsig in want:
+            by_sig.setdefault(rsig, []).append(r)
+
+    trades, setups = [], []
+    for fsig, f in want.items():
+        rows = [r for r in by_sig.get(fsig, []) if (r["n_trades"] or 0) >= 5]
+        rows.sort(key=lambda r: -(r["profit_factor"]
+                                  if math.isfinite(r["profit_factor"]) else 0))
+        for r in rows[:limit_symbols]:
+            pf_val = float(r["profit_factor"])
+            setups.append({
+                "symbol": r["symbol"], "label": f["label"],
+                "run_id": r["run_id"],
+                "pf": pf_val if math.isfinite(pf_val) else None,
+                "oos_pf": None,
+            })
+            try:
+                for t in _run_trades(r["run_id"]):
+                    trades.append({**t, "symbol": r["symbol"],
+                                   "setup": f["label"]})
+            except Exception as e:
+                print(f"[journal] {r['symbol']}: {type(e).__name__}: {e}",
+                      flush=True)
+        if not rows:
+            print(f"[journal] approved '{f['label']}' has no league "
+                  f"registry rows — re-run the league", flush=True)
+    trades.sort(key=lambda t: t["entry_ts"])
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "scope": (f"{approved[0]['label']} — top {limit_symbols} assets by PF"
+                  if sig != "all"
+                  else f"{len(approved)} approved setups, top "
+                       f"{limit_symbols} assets each"),
+        "symbols": sorted({t["symbol"] for t in trades}),
+        "setups": sorted(setups, key=lambda x: (x["label"], x["symbol"])),
+        "multi": sig == "all" and len(approved) > 1,
+        "trades": trades,
+    }
 
 
 @app.get("/api/journal")
-def get_journal(limit_symbols: int = 20):
-    """Chronological trades of each asset's best setup (roster first, else
-    the top assets by OOS profit factor) with per-trade USD P&L at the
-    configured class sizes — the capacity-planning feed for the Journal."""
+def get_journal(limit_symbols: int = 20, sig: str | None = None):
+    """Chronological trades with per-trade USD P&L at the configured class
+    sizes — the capacity-planning feed for the Journal. With `sig` (an
+    approved setup's sig, or "all"), the feed is that approved setup on its
+    top assets; without it, the legacy best-setup-per-asset scope."""
     from specula.settings import get_settings
 
     roster = runlog.autotrade_symbols()
     s = get_settings()
-    key = (tuple(roster), limit_symbols, json.dumps(s, sort_keys=True))
-    if _journal_cache["key"] == key:
-        return _journal_cache["doc"]
+    key = (tuple(roster), limit_symbols, sig, json.dumps(s, sort_keys=True))
+    if key in _journal_cache:
+        return _journal_cache[key]
+
+    if sig:
+        doc = _journal_approved(sig, limit_symbols)
+        if len(_journal_cache) > 6:
+            _journal_cache.pop(next(iter(_journal_cache)))
+        _journal_cache[key] = doc
+        return doc
 
     from specula.sweeps import cfg_label
 
@@ -396,7 +464,9 @@ def get_journal(limit_symbols: int = 20):
            "symbols": sorted(chosen["symbol"].tolist()),
            "setups": sorted(setups, key=lambda s: s["symbol"]),
            "trades": trades}
-    _journal_cache.update(key=key, doc=doc)
+    if len(_journal_cache) > 6:
+        _journal_cache.pop(next(iter(_journal_cache)))
+    _journal_cache[key] = doc
     return doc
 
 

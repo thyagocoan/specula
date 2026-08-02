@@ -103,6 +103,8 @@ const CAPS = [0, 1, 2, 3, 5, 10]
 // it's pure arithmetic over the already-computed trade times.
 export default function Journal() {
   const [doc, setDoc] = useState(null)
+  const [approved, setApproved] = useState(null) // null = loading
+  const [selSig, setSelSig] = useState('all')
   const [err, setErr] = useState(null)
   const [cls, setCls] = useState('all')
   const [view, setView] = useState('charts')
@@ -112,14 +114,36 @@ export default function Journal() {
   useEffect(() => {
     ;(async () => {
       try {
-        const r = await fetch('/api/journal')
-        if (!r.ok) throw new Error(`API error ${r.status}`)
-        setDoc(await r.json())
-      } catch (e) {
-        setErr(String(e.message || e))
+        const r = await fetch('/api/favsetups')
+        const favs = r.ok ? await r.json() : []
+        const appr = favs.filter((f) => f.status === 'approved')
+        setApproved(appr)
+        if (appr.length === 1) setSelSig(appr[0].sig)
+      } catch {
+        setApproved([])
       }
     })()
   }, [])
+
+  useEffect(() => {
+    if (!approved || approved.length === 0) return
+    let alive = true
+    setDoc(null)
+    setErr(null)
+    ;(async () => {
+      try {
+        const r = await fetch(`/api/journal?sig=${encodeURIComponent(selSig)}`)
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}))
+          throw new Error(d?.detail || `API error ${r.status}`)
+        }
+        if (alive) setDoc(await r.json())
+      } catch (e) {
+        if (alive) setErr(String(e.message || e))
+      }
+    })()
+    return () => { alive = false }
+  }, [approved, selSig])
 
   const model = useMemo(() => {
     if (!doc) return null
@@ -219,13 +243,25 @@ export default function Journal() {
   }, [doc, cls, cap])
 
   if (err) return <div className="card"><span className="neg">{err}</span></div>
+  if (approved != null && approved.length === 0) {
+    return (
+      <div>
+        <h1 className="page-title">Journal</h1>
+        <p className="page-sub">
+          the journal shows League-approved setups only — nothing is
+          approved yet. Run the league, approve the holdout survivors, and
+          come back.
+        </p>
+      </div>
+    )
+  }
   if (!doc) {
     return (
       <div>
         <h1 className="page-title">Journal</h1>
         <p className="page-sub">
-          assembling every trade of each asset's best setup — the first load
-          after a restart backtests each asset once, give it a minute…
+          assembling every trade of the selected approved setup — the first
+          load backtests each of its assets once, give it a minute…
         </p>
       </div>
     )
@@ -238,13 +274,24 @@ export default function Journal() {
     <div>
       <h1 className="page-title">Journal</h1>
       <p className="page-sub">
-        One setup per asset — its best logged strategy ({doc.scope}; the exact
-        list is on the Charts tab). Trades replay in the order they fired; set
-        "max open" to simulate limited capital — capped-out signals are skipped
-        instantly, nothing reprocesses. P&amp;L is net of your venue fees.
+        League-approved setups only ({doc.scope}). Trades replay in the order
+        they fired; set "max open" to simulate limited capital — capped-out
+        signals are skipped instantly, nothing reprocesses. P&amp;L is net of
+        your venue fees.
       </p>
 
       <div className="controls">
+        <div className="select-pill">
+          <select value={selSig} onChange={(e) => setSelSig(e.target.value)}
+            aria-label="approved setup">
+            {(approved?.length ?? 0) > 1 && (
+              <option value="all">All approved setups ({approved.length})</option>
+            )}
+            {(approved || []).map((f) => (
+              <option key={f.sig} value={f.sig}>{f.label}</option>
+            ))}
+          </select>
+        </div>
         <div className="tabs">
           {VIEWS.map(([id, label]) => (
             <button key={id} className={view === id ? 'active' : ''}
@@ -309,10 +356,10 @@ export default function Journal() {
           ))}
 
           <div className="card">
-            <h3>What the journal trades — one best setup per asset</h3>
+            <h3>What the journal trades</h3>
             <p className="hint" style={{ marginTop: 4 }}>
-              scope: {doc.scope}. With autotrade roster assets enabled, the
-              journal switches to exactly those.
+              {doc.scope} — asset ranking comes from the league's per-asset
+              results (re-run the league after approving to refresh them).
             </p>
             <table className="grid">
               <thead>
@@ -358,6 +405,7 @@ export default function Journal() {
                       <th className="txt">Day</th>
                       <th className="txt">Entry (Melbourne)</th>
                       <th className="txt">Symbol</th>
+                      {doc.multi && <th className="txt">Setup</th>}
                       <th className="txt">Side</th>
                       <th>Entry</th>
                       <th className="txt">Exit (Melbourne)</th>
@@ -375,6 +423,7 @@ export default function Journal() {
                           <td className="txt">{fmtDay(t.entry_ts)}</td>
                           <td className="txt">{fmtTime(t.entry_ts, MEL)}</td>
                           <td className="txt"><b>{t.symbol}</b></td>
+                          {doc.multi && <td className="txt hint">{t.setup}</td>}
                           <td className="txt">{t.side}</td>
                           <td>{t.entry_price}</td>
                           <td className="txt">{t.exit_ts ? fmtTime(t.exit_ts, MEL) : 'open'}</td>

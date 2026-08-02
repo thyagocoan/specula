@@ -279,13 +279,14 @@ export default function League() {
 
   return (
     <div>
-      <h1 className="page-title">Setup League</h1>
+      <h1 className="page-title">Setups</h1>
       <p className="page-sub">
-        Every candidate setup (your ★ favourites + auto-picked consistent
-        configs) backtested on ALL assets at your venue fees, then judged
-        only on the last {doc?.holdout_days ?? 60} days of data — a period
-        the setups were not selected on. Approve the survivors to build your
-        monitored shortlist.
+        The league: every candidate setup (your ★ favourites + auto-picked
+        configs + explorer discoveries) backtested on ALL assets at your
+        venue fees, then judged only on the last {doc?.holdout_days ?? 60}
+        days of data — a period the setups were not selected on. Approve the
+        survivors to build your monitored shortlist; star new candidates
+        from any asset review on the Overview.
       </p>
 
       <div className="controls">
@@ -313,8 +314,8 @@ export default function League() {
       {!doc?.available ? (
         <div className="card">
           <p className="hint">
-            no league results yet — star a few setups on the Setups or
-            Overview pages, then hit "Run the league now".
+            no league results yet — star a few setups on the Overview asset
+            reviews, then hit "Run the league now" or start the Explorer.
           </p>
         </div>
       ) : (
