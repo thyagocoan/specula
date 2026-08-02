@@ -37,6 +37,16 @@ def _cached(cache: dict, key: tuple, fn):
     return cache[key]
 
 
+def eod_masks(exec_index: pd.DatetimeIndex) -> tuple[pd.Series, pd.Series]:
+    """(last-bar-of-session exit mask, late-entry block mask) for equities."""
+    ny = exec_index.tz_convert("America/New_York")
+    day = pd.Series(ny.date, index=exec_index)
+    eod = day != day.shift(-1)
+    late = pd.Series(ny.hour * 60 + ny.minute >= EOD_ENTRY_CUTOFF_MIN,
+                     index=exec_index)
+    return eod, late
+
+
 def build_portfolio(cfg: dict) -> vbt.Portfolio:
     setup_df = frames(cfg["symbol"], cfg["setup_tf"])
     exec_df = frames(cfg["symbol"], cfg["exec_tf"])
@@ -116,6 +126,37 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
             price.iloc[pos] = exec_df["open"].iloc[pos]
         sl_stop, tp_stop = cfg["sl"], cfg["tp"]
 
+    elif cfg["strategy"] == "lab":
+        import json as _json
+
+        from specula import signals as sig
+
+        sig_key = ("lab", cfg["symbol"], cfg["setup_tf"], cfg["exec_tf"],
+                   _json.dumps(cfg["entry"], sort_keys=True))
+        long_e, short_e, price_hint = _cached(
+            _signal_cache, sig_key,
+            lambda: sig.generate(cfg["entry"], cfg["symbol"],
+                                 cfg["setup_tf"], cfg["exec_tf"]),
+        )
+        entries = long_e.copy()
+        short_entries = short_e.copy()
+        if price_hint is not None:
+            price[entries] = price_hint[entries]
+            price[short_entries] = price_hint[short_entries]
+        exits = pd.Series(False, index=exec_df.index)
+        short_exits = pd.Series(False, index=exec_df.index)
+        exit_spec = cfg["exit"]
+        sl_stop = exit_spec.get("sl", np.nan)
+        tp_stop = exit_spec.get("tp", np.nan)
+        if exit_spec["kind"] == "trail":
+            sl_trail = True
+        elif exit_spec["kind"] == "time":
+            # exit N exec bars after the entry signal (approximation: keyed to
+            # the signal bar, exact when entries don't overlap within N bars)
+            n_bars = int(exit_spec["max_bars"])
+            exits = entries.shift(n_bars, fill_value=False)
+            short_exits = short_entries.shift(n_bars, fill_value=False)
+
     else:
         raise ValueError(f"unknown strategy {cfg['strategy']}")
 
@@ -131,11 +172,7 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
 
     if is_equity(cfg["symbol"]):
         # intraday only: flat by the close, no fresh entries near it
-        ny = exec_df.index.tz_convert("America/New_York")
-        day = pd.Series(ny.date, index=exec_df.index)
-        eod = day != day.shift(-1)  # last bar of each session
-        late = pd.Series(ny.hour * 60 + ny.minute >= EOD_ENTRY_CUTOFF_MIN,
-                         index=exec_df.index)
+        eod, late = eod_masks(exec_df.index)
         entries = entries & ~late & ~eod
         short_entries = short_entries & ~late & ~eod
         exits = exits | eod

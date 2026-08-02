@@ -16,6 +16,7 @@ export default function Execute({ apiUp }) {
     { id: 'rsi_filter', label: 'RSI filter analysis (FFFD)', desc: 'Multi-TF RSI at each entry: bucket diagnosis + hypothesis filters vs baseline.' },
     { id: 'export_web', label: 'Re-export web data', desc: 'Refresh runs.json and sync report HTMLs into the app.' },
     { id: 'daily_update', label: 'Daily data update', desc: 'Pull latest bars for every symbol in the lake, rebuild, re-run walk-forward, refresh portal. Also runs nightly via Task Scheduler.' },
+    { id: 'overnight_lab', label: 'Overnight strategy lab', desc: 'Full discovery pipeline: MA megasweep → ORB/VWAP/RSI coarse → scoring → 1m refine → walk-forward on candidates (~6h).' },
   ])
   const [selected, setSelected] = useState(null)
   const [error, setError] = useState(null)

@@ -32,19 +32,23 @@ _last_request = 0.0
 
 def throttled_get(client: httpx.Client, url: str, params: dict) -> httpx.Response:
     global _last_request
-    for attempt in range(5):
+    for attempt in range(6):
         wait = REQ_INTERVAL - (time.monotonic() - _last_request)
         if wait > 0:
             time.sleep(wait)
         _last_request = time.monotonic()
-        resp = client.get(url, params=params)
+        try:
+            resp = client.get(url, params=params)
+        except httpx.HTTPError:  # timeouts, transient transport errors
+            time.sleep(2 ** (attempt + 1))
+            continue
         if resp.status_code == 429:
             retry_after = float(resp.headers.get("Retry-After", 2 ** (attempt + 1)))
             time.sleep(retry_after)
             continue
         resp.raise_for_status()
         return resp
-    raise RuntimeError(f"rate-limited after retries: {url} {params}")
+    raise RuntimeError(f"failed after retries: {url} {params}")
 
 
 def month_bounds(ym: str) -> tuple[datetime, datetime]:

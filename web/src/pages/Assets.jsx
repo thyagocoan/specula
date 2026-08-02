@@ -1,12 +1,42 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Pf, Ret } from '../components/bits.jsx'
 import { groupSetups, num, uniqueSorted } from '../data.js'
+
+function OosLine({ wf, symbol }) {
+  const doc = wf?.symbols?.find((s) => s.symbol === symbol)
+    || wf?.symbols?.find((s) => s.symbol === `${symbol}·lab`)
+  if (!doc) return null
+  const a = doc.scenarios?.[0]?.aggregate
+  if (!a) return null
+  return (
+    <p className="hint" style={{ margin: '4px 0 10px' }}>
+      out-of-sample verdict{doc.symbol.endsWith('·lab') ? ' (lab)' : ''}:{' '}
+      PF <Pf v={a.oos_pf} /> · win {num(a.oos_win_rate_pct, 1)}% ·{' '}
+      <Ret v={a.oos_return_pct} /> over {a.oos_trades} trades
+    </p>
+  )
+}
 
 // The core question of the project: what is the best setup per asset?
 export default function Assets({ runs }) {
   const [minTrades, setMinTrades] = useState(30)
+  const [wf, setWf] = useState(null)
   const symbols = uniqueSorted(runs.map((r) => r.symbol))
   const setups = useMemo(() => groupSetups(runs), [runs])
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        let r = await fetch('/api/walkforward')
+        if (r.ok) {
+          const d = await r.json()
+          if (d.available) return setWf(d)
+        }
+        r = await fetch('/data/walkforward.json')
+        if (r.ok) setWf(await r.json())
+      } catch { /* none yet */ }
+    })()
+  }, [])
 
   return (
     <div>
@@ -31,6 +61,7 @@ export default function Assets({ runs }) {
           return (
             <div className="card" key={sym}>
               <h3>{sym} <span className="hint">· {all.length} runs logged</span></h3>
+              <OosLine wf={wf} symbol={sym} />
               {rows.length === 0 ? (
                 <p className="hint">no setups with ≥{minTrades} trades yet</p>
               ) : (

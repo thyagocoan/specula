@@ -1,0 +1,210 @@
+"""Signal library for the strategy lab.
+
+Uniform interface: `generate(entry_spec, symbol, setup_tf, exec_tf)` returns
+`(long_entries, short_entries, price_hint)` on the exec index — all look-ahead
+safe. Setup-TF events become visible only at the setup bar's close (via
+mtf.activation_positions); exec-TF signals use only completed exec bars.
+
+entry_spec examples:
+    {"kind": "ma_cross", "ma_type": "ema", "fast": 9, "slow": 21}
+    {"kind": "orb", "range_min": 30}
+    {"kind": "vwap", "mode": "revert", "band_k": 1.5}
+    {"kind": "rsi_cross", "window": 14, "lo": 30, "hi": 70}
+    {"kind": "didi", "tol_bars": 1, "adx_filter": false}
+    {"kind": "fffd", "dev": 2.0, "strict": true}
+"""
+
+import numpy as np
+import pandas as pd
+from numba import njit
+
+from specula import mtf
+from specula.data import is_equity
+from specula.features import wilder_rsi
+
+
+def _events_to_exec(event_index: pd.DatetimeIndex, setup_tf: str,
+                    exec_index: pd.DatetimeIndex) -> pd.Series:
+    """Setup-bar events -> one-bar True at their exec activation bar."""
+    arr = np.zeros(len(exec_index), dtype=bool)
+    if len(event_index):
+        pos = mtf.activation_positions(event_index, setup_tf, exec_index)
+        pos = pos[pos < len(exec_index)]
+        arr[pos] = True
+    return pd.Series(arr, index=exec_index)
+
+
+def _day_key(exec_index: pd.DatetimeIndex, symbol: str) -> pd.Index:
+    tz = "America/New_York" if is_equity(symbol) else "UTC"
+    return pd.Index(exec_index.tz_convert(tz).date)
+
+
+# ------------------------------------------------------------------ ma_cross
+
+def ma_cross(setup_df: pd.DataFrame, exec_index: pd.DatetimeIndex,
+             setup_tf: str, ma_type: str, fast: int, slow: int):
+    close = setup_df["close"]
+    if ma_type == "ema":
+        f = close.ewm(span=fast, adjust=False).mean()
+        s = close.ewm(span=slow, adjust=False).mean()
+    else:
+        f = close.rolling(fast).mean()
+        s = close.rolling(slow).mean()
+    up = (f > s) & (f.shift(1) <= s.shift(1))
+    dn = (f < s) & (f.shift(1) >= s.shift(1))
+    long_e = _events_to_exec(close.index[up.fillna(False)], setup_tf, exec_index)
+    short_e = _events_to_exec(close.index[dn.fillna(False)], setup_tf, exec_index)
+    return long_e, short_e, None
+
+
+# ----------------------------------------------------------------------- orb
+
+@njit(cache=True)
+def _orb_machine(day_id, in_range, open_, high, low, n):
+    long_e = np.zeros(n, np.bool_)
+    short_e = np.zeros(n, np.bool_)
+    price = np.full(n, np.nan)
+    cur = -1
+    rhi = 0.0
+    rlo = 0.0
+    have_range = False
+    fired = False
+    for i in range(n):
+        if day_id[i] != cur:
+            cur = day_id[i]
+            rhi, rlo = -1e308, 1e308
+            have_range = False
+            fired = False
+        if in_range[i]:
+            if high[i] > rhi:
+                rhi = high[i]
+            if low[i] < rlo:
+                rlo = low[i]
+            have_range = True
+            continue
+        if not have_range or fired:
+            continue
+        if high[i] > rhi:
+            long_e[i] = True
+            price[i] = open_[i] if open_[i] > rhi else rhi
+            fired = True
+        elif low[i] < rlo:
+            short_e[i] = True
+            price[i] = open_[i] if open_[i] < rlo else rlo
+            fired = True
+    return long_e, short_e, price
+
+
+def orb(exec_df: pd.DataFrame, symbol: str, range_min: int):
+    """Opening-range breakout: first break of the first `range_min` minutes'
+    range, one trade per session day, stop-order fill semantics."""
+    idx = exec_df.index
+    day = _day_key(idx, symbol)
+    day_id, _ = pd.factorize(day)
+    day_start = pd.Series(idx, index=idx).groupby(day_id).transform("min")
+    minutes_in = np.asarray((idx - pd.DatetimeIndex(day_start)).total_seconds()) // 60
+    in_range = np.asarray(minutes_in < range_min)
+    long_e, short_e, price = _orb_machine(
+        day_id.astype(np.int64), in_range,
+        exec_df["open"].to_numpy(np.float64),
+        exec_df["high"].to_numpy(np.float64),
+        exec_df["low"].to_numpy(np.float64),
+        len(exec_df),
+    )
+    return (pd.Series(long_e, index=idx), pd.Series(short_e, index=idx),
+            pd.Series(price, index=idx))
+
+
+# ---------------------------------------------------------------------- vwap
+
+def vwap(exec_df: pd.DataFrame, symbol: str, mode: str, band_k: float = 1.5,
+         warmup_bars: int = 15):
+    """Session-anchored VWAP. `revert`: fade band touches back toward VWAP;
+    `cross`: trend entries on VWAP crosses. Uses only completed bars."""
+    idx = exec_df.index
+    close, vol = exec_df["close"], exec_df["volume"]
+    day = pd.Series(pd.factorize(_day_key(idx, symbol))[0], index=idx)
+    g = day
+    pv = (close * vol).groupby(g).cumsum()
+    vv = vol.groupby(g).cumsum().replace(0, np.nan)
+    vw = pv / vv
+    n = g.groupby(g).cumcount() + 1
+    dev = close - vw
+    s1 = dev.groupby(g).cumsum()
+    s2 = (dev ** 2).groupby(g).cumsum()
+    var = (s2 / n - (s1 / n) ** 2).clip(lower=0)
+    band = band_k * np.sqrt(var)
+    ok = n >= warmup_bars
+    lower, upper = vw - band, vw + band
+
+    if mode == "revert":
+        long_e = ok & (close > lower) & (close.shift(1) <= lower.shift(1))
+        short_e = ok & (close < upper) & (close.shift(1) >= upper.shift(1))
+    else:  # cross (trend)
+        long_e = ok & (close > vw) & (close.shift(1) <= vw.shift(1))
+        short_e = ok & (close < vw) & (close.shift(1) >= vw.shift(1))
+    same_day = g.eq(g.shift(1))
+    long_e = (long_e & same_day).fillna(False)
+    short_e = (short_e & same_day).fillna(False)
+    return long_e, short_e, None
+
+
+# ----------------------------------------------------------------- rsi_cross
+
+def rsi_cross(setup_df: pd.DataFrame, exec_index: pd.DatetimeIndex,
+              setup_tf: str, window: int, lo: float, hi: float):
+    r = wilder_rsi(setup_df["close"], window)
+    up = (r > lo) & (r.shift(1) <= lo)      # leaving oversold -> long
+    dn = (r < hi) & (r.shift(1) >= hi)      # leaving overbought -> short
+    long_e = _events_to_exec(r.index[up.fillna(False)], setup_tf, exec_index)
+    short_e = _events_to_exec(r.index[dn.fillna(False)], setup_tf, exec_index)
+    return long_e, short_e, None
+
+
+# ------------------------------------------------------------------ adapters
+
+def didi(setup_df: pd.DataFrame, exec_df: pd.DataFrame, setup_tf: str,
+         tol_bars: int = 1, adx_filter: bool = False):
+    sig, _, _ = mtf.didi_setup_signals(setup_df, tol_bars=tol_bars,
+                                       adx_filter=adx_filter)
+    long_e, short_e, price, _ = mtf.run_breakout(sig, setup_tf, exec_df)
+    idx = exec_df.index
+    return (pd.Series(long_e, index=idx), pd.Series(short_e, index=idx),
+            pd.Series(price, index=idx))
+
+
+def fffd(setup_df: pd.DataFrame, exec_df: pd.DataFrame, setup_tf: str,
+         dev: float = 2.0, strict: bool = True):
+    sig, _, _, _ = mtf.fffd_setup_signals(setup_df, dev=dev, strict=strict)
+    long_e, short_e, price, _ = mtf.run_breakout(sig, setup_tf, exec_df)
+    idx = exec_df.index
+    return (pd.Series(long_e, index=idx), pd.Series(short_e, index=idx),
+            pd.Series(price, index=idx))
+
+
+# ------------------------------------------------------------------ dispatch
+
+def generate(entry: dict, symbol: str, setup_tf: str, exec_tf: str):
+    from specula.backtest import frames
+
+    setup_df = frames(symbol, setup_tf)
+    exec_df = frames(symbol, exec_tf)
+    kind = entry["kind"]
+    if kind == "ma_cross":
+        return ma_cross(setup_df, exec_df.index, setup_tf,
+                        entry.get("ma_type", "sma"), entry["fast"], entry["slow"])
+    if kind == "orb":
+        return orb(exec_df, symbol, entry["range_min"])
+    if kind == "vwap":
+        return vwap(exec_df, symbol, entry["mode"], entry.get("band_k", 1.5))
+    if kind == "rsi_cross":
+        return rsi_cross(setup_df, exec_df.index, setup_tf,
+                         entry.get("window", 14), entry.get("lo", 30),
+                         entry.get("hi", 70))
+    if kind == "didi":
+        return didi(setup_df, exec_df, setup_tf,
+                    entry.get("tol_bars", 1), entry.get("adx_filter", False))
+    if kind == "fffd":
+        return fffd(setup_df, exec_df, setup_tf,
+                    entry.get("dev", 2.0), entry.get("strict", True))
+    raise ValueError(f"unknown entry kind {kind}")

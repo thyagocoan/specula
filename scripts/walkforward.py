@@ -60,16 +60,16 @@ def trade_table(cfg: dict) -> pd.DataFrame:
     })
 
 
-def run_task(task: tuple[str, tuple[str, str]]) -> list[tuple[dict, list, list]]:
-    symbol, pair = task
+def run_task(task: tuple[str, list[dict]]) -> list[tuple[dict, list, list]]:
+    symbol, cfgs = task
     out = []
-    for cfg in pair_configs(*pair, symbol=symbol, fees=fees_for(symbol)):
+    for cfg in cfgs:
         try:
             t = trade_table(cfg)
             ts_ns = t["entry_ts"].dt.as_unit("ns").astype("int64")
             out.append((cfg, ts_ns.tolist(), t["ret"].tolist()))
         except Exception as e:
-            print(f"[error] {symbol} {pair}: {type(e).__name__}: {e}", flush=True)
+            print(f"[error] {symbol}: {type(e).__name__}: {e}", flush=True)
     return out
 
 
@@ -161,13 +161,36 @@ def evaluate_scenario(candidates: list[dict], folds: list[dict]) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbols", default=",".join(DEFAULT_SYMBOLS))
+    ap.add_argument("--candidates", default=None,
+                    help="lab_candidates.json — evaluate these cfgs instead of "
+                         "the built-in grid; results keyed '<symbol>·lab'")
     args = ap.parse_args()
-    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
 
     t0 = time.monotonic()
-    tasks = [(s, p) for s in symbols for p in TF_PAIRS]
+    label_suffix = ""
+    if args.candidates:
+        cand = json.loads(Path(args.candidates).read_text(encoding="utf-8"))
+        sym_cfgs: dict[str, list[dict]] = {}
+        for c in cand["candidates"]:
+            for s in c["symbols"]:
+                for fee in fees_for(s):
+                    cfg = json.loads(json.dumps(c["cfg"]))
+                    cfg.update(symbol=s, exec_tf="1min", fee=fee)
+                    sym_cfgs.setdefault(s, []).append(cfg)
+        symbols = sorted(sym_cfgs)
+        tasks = []
+        for s in symbols:
+            cfgs = sym_cfgs[s]
+            tasks += [(s, cfgs[i:i + 24]) for i in range(0, len(cfgs), 24)]
+        label_suffix = "·lab"
+        print(f"candidates mode: {len(symbols)} symbols, "
+              f"{sum(len(v) for v in sym_cfgs.values())} cfgs", flush=True)
+    else:
+        symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        tasks = [(s, list(pair_configs(*p, symbol=s, fees=fees_for(s))))
+                 for s in symbols for p in TF_PAIRS]
     workers = max(1, (os.cpu_count() or 4) - 2)
-    print(f"{len(symbols)} symbols x {len(TF_PAIRS)} TF pairs, {workers} workers",
+    print(f"{len(symbols)} symbols, {len(tasks)} tasks, {workers} workers",
           flush=True)
 
     by_symbol: dict[str, list[dict]] = {s: [] for s in symbols}
@@ -196,14 +219,15 @@ def main() -> int:
             cands = [c for c in configs if c["cfg"]["fee"] == fee]
             result = evaluate_scenario(cands, folds)
             oos_raw = result.pop("oos_raw")
-            if symbol in EQUITY_SYMBOLS:
+            if is_equity(symbol):
                 equity_oos.setdefault(fi, []).extend(oos_raw)
             scenarios.append({"fee": fee, **result})
             a = result["aggregate"]
-            print(f"{symbol} fee {fee * 100:.2f}%: OOS {a['oos_trades']} trades, "
+            print(f"{symbol}{label_suffix} fee {fee * 100:.2f}%: "
+                  f"OOS {a['oos_trades']} trades, "
                   f"PF {a['oos_pf']}, win {a['oos_win_rate_pct']}%, "
                   f"return {a['oos_return_pct']}%", flush=True)
-        symbol_docs.append({"symbol": symbol, "scenarios": scenarios})
+        symbol_docs.append({"symbol": symbol + label_suffix, "scenarios": scenarios})
 
     # portfolio view: all equity symbols' OOS trades stitched together
     if equity_oos:
@@ -212,9 +236,21 @@ def main() -> int:
             agg, curve = aggregate_oos(equity_oos.get(fi, []))
             scenarios.append({"fee": fee, "folds": [], "aggregate": agg,
                               "equity": curve})
-            print(f"ALL-EQUITIES fee {fee * 100:.2f}%: OOS {agg['oos_trades']} trades, "
+            print(f"ALL-EQUITIES{label_suffix} fee {fee * 100:.2f}%: "
+                  f"OOS {agg['oos_trades']} trades, "
                   f"PF {agg['oos_pf']}, return {agg['oos_return_pct']}%", flush=True)
-        symbol_docs.append({"symbol": "ALL-EQUITIES", "scenarios": scenarios})
+        symbol_docs.append({"symbol": "ALL-EQUITIES" + label_suffix,
+                            "scenarios": scenarios})
+
+    # merge with existing results: replace docs we re-evaluated, keep the rest
+    existing = []
+    if OUT.exists():
+        try:
+            existing = json.loads(OUT.read_text(encoding="utf-8")).get("symbols", [])
+        except Exception:
+            existing = []
+    new_keys = {d["symbol"] for d in symbol_docs}
+    symbol_docs = [d for d in existing if d["symbol"] not in new_keys] + symbol_docs
 
     doc = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

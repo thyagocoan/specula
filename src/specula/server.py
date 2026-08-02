@@ -47,6 +47,10 @@ JOB_TYPES = {
         "label": "Daily data update (+walk-forward)",
         "cmd": [sys.executable, "scripts/daily_update.py", "--with-backtests"],
     },
+    "overnight_lab": {
+        "label": "Overnight strategy lab (discovery + OOS)",
+        "cmd": [sys.executable, "scripts/overnight_lab.py"],
+    },
 }
 
 JOBS: dict[str, dict] = {}
@@ -69,8 +73,6 @@ def _watch(job_id: str, proc: subprocess.Popen, log_handle) -> None:
 
 @app.get("/api/runs")
 def get_runs():
-    if not runlog.REGISTRY.exists():
-        return {"generated_at": _now(), "count": 0, "runs": []}
     return runlog.payload(runlog.load())
 
 

@@ -1,18 +1,57 @@
-"""Append-only registry of every backtest ever run.
+"""Append-only registry of every backtest ever run — SQLite-backed.
 
-Each executed config becomes one row in data/meta/backtest_runs.parquet:
+Each executed config is one row in data/meta/registry.sqlite (table `runs`):
 run_id, timestamp, git commit, sweep tag, full params as JSON (enough to
 reproduce the run via backtest.build_portfolio), and the result metrics.
+Appends are transactional (safe under concurrent jobs); reads are indexed.
+
+The pre-migration Parquet registry (backtest_runs.parquet) is imported once
+into an empty database and then kept as a frozen archive.
 """
 
 import json
 import math
+import sqlite3
 import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+
+DB = Path("data/meta/registry.sqlite")
+LEGACY_PARQUET = Path("data/meta/backtest_runs.parquet")
+WEB_DATA = Path("web/public/data/runs.json")
+REPORTS = Path("reports")
+
+CFG_COLS = ["symbol", "strategy", "setup_tf", "exec_tf"]
+
+COLUMNS = [
+    "run_id", "created_at", "git_sha", "sweep_tag", "symbol", "strategy",
+    "setup_tf", "exec_tf", "params", "n_trades", "total_return_pct",
+    "max_dd_pct", "win_rate_pct", "profit_factor", "avg_trade_pct", "sharpe",
+]
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    created_at TEXT,
+    git_sha TEXT,
+    sweep_tag TEXT,
+    symbol TEXT,
+    strategy TEXT,
+    setup_tf TEXT,
+    exec_tf TEXT,
+    params TEXT,
+    n_trades INTEGER,
+    total_return_pct REAL,
+    max_dd_pct REAL,
+    win_rate_pct REAL,
+    profit_factor REAL,
+    avg_trade_pct REAL,
+    sharpe REAL
+)
+"""
 
 
 def _finite(v):
@@ -21,11 +60,51 @@ def _finite(v):
         return None
     return v
 
-REGISTRY = Path("data/meta/backtest_runs.parquet")
-WEB_DATA = Path("web/public/data/runs.json")
-REPORTS = Path("reports")
 
-CFG_COLS = ["symbol", "strategy", "setup_tf", "exec_tf"]
+def _to_sql(v):
+    """Coerce numpy scalars / NaN / inf to SQLite-friendly Python values."""
+    import numpy as np
+
+    if v is None:
+        return None
+    if isinstance(v, np.integer):
+        return int(v)
+    if isinstance(v, np.floating):
+        v = float(v)
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
+    if not isinstance(v, (str, int, float, bytes)) and pd.isna(v):
+        return None
+    return v
+
+
+def _connect() -> sqlite3.Connection:
+    DB.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(DB, timeout=60)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute(_SCHEMA)
+    for col in ("symbol", "sweep_tag", "profit_factor"):
+        con.execute(f"CREATE INDEX IF NOT EXISTS idx_runs_{col} ON runs({col})")
+    _migrate_legacy(con)
+    return con
+
+
+def _migrate_legacy(con: sqlite3.Connection) -> None:
+    if con.execute("SELECT COUNT(*) FROM runs").fetchone()[0] > 0:
+        return
+    if not LEGACY_PARQUET.exists():
+        return
+    df = pd.read_parquet(LEGACY_PARQUET)
+    rows = [
+        tuple(_to_sql(r.get(c)) for c in COLUMNS)
+        for r in df.to_dict("records")
+    ]
+    con.executemany(
+        f"INSERT OR REPLACE INTO runs ({','.join(COLUMNS)}) "
+        f"VALUES ({','.join('?' * len(COLUMNS))})", rows,
+    )
+    con.commit()
+    print(f"[runlog] migrated {len(rows)} legacy rows into {DB}", flush=True)
 
 
 def git_sha() -> str:
@@ -51,13 +130,40 @@ def make_row(cfg: dict, metrics: dict, sweep_tag: str, sha: str) -> dict:
 
 
 def append(rows: list[dict]) -> pd.DataFrame:
-    new = pd.DataFrame(rows)
-    if REGISTRY.exists():
-        new = pd.concat([pd.read_parquet(REGISTRY), new], ignore_index=True)
-    REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    new.to_parquet(REGISTRY)
-    export_web(new)
-    return new
+    con = _connect()
+    try:
+        data = [tuple(_to_sql(r.get(c)) for c in COLUMNS) for r in rows]
+        con.executemany(
+            f"INSERT OR REPLACE INTO runs ({','.join(COLUMNS)}) "
+            f"VALUES ({','.join('?' * len(COLUMNS))})", data,
+        )
+        con.commit()
+        df = pd.read_sql_query("SELECT * FROM runs ORDER BY rowid", con)
+    finally:
+        con.close()
+    export_web(df)
+    return df
+
+
+def load() -> pd.DataFrame:
+    con = _connect()
+    try:
+        return pd.read_sql_query("SELECT * FROM runs ORDER BY rowid", con)
+    finally:
+        con.close()
+
+
+def get_cfg(run_id: str) -> dict:
+    con = _connect()
+    try:
+        row = con.execute(
+            "SELECT params FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+    finally:
+        con.close()
+    if row is None:
+        raise KeyError(f"run_id {run_id} not found in {DB}")
+    return json.loads(row[0])
 
 
 def records(df: pd.DataFrame) -> list[dict]:
@@ -99,15 +205,3 @@ def export_web(df: pd.DataFrame) -> None:
         return
     WEB_DATA.parent.mkdir(parents=True, exist_ok=True)
     WEB_DATA.write_text(json.dumps(payload(df)), encoding="utf-8")
-
-
-def load() -> pd.DataFrame:
-    return pd.read_parquet(REGISTRY)
-
-
-def get_cfg(run_id: str) -> dict:
-    df = load()
-    match = df[df["run_id"] == run_id]
-    if match.empty:
-        raise KeyError(f"run_id {run_id} not found in {REGISTRY}")
-    return json.loads(match.iloc[0]["params"])
