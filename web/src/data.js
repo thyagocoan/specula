@@ -48,6 +48,24 @@ export function setupLabel(run) {
       .filter(Boolean)
       .join(' · ')
   }
+  if (run.strategy === 'lab') {
+    const entry = p.entry || {}
+    const exit = p.exit || {}
+    const NAMES = {
+      ma_cross: 'MA cross', orb: 'Opening range', vwap: 'VWAP',
+      rsi_cross: 'RSI cross',
+    }
+    const bits = [`${NAMES[entry.kind] || entry.kind || '?'} ${run.setup_tf}→${run.exec_tf}`]
+    for (const [k, v] of Object.entries(entry)) {
+      if (k !== 'kind') bits.push(`${k} ${v}`)
+    }
+    let ex = `exit ${exit.kind || '?'}`
+    if (exit.sl != null) ex += ` sl ${pct(exit.sl)}`
+    if (exit.tp != null) ex += ` tp ${pct(exit.tp)}`
+    if (exit.max_bars != null) ex += ` ${exit.max_bars} bars`
+    bits.push(ex)
+    return bits.join(' · ')
+  }
   return [
     `FFFD ${run.setup_tf}→${run.exec_tf}`,
     p.strict ? 'strict' : 'loose',

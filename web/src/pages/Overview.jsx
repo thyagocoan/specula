@@ -65,39 +65,86 @@ function wfPeriod(wf, symbol, days) {
 }
 
 const CHART_TF = { 1: '5min', 7: '30min', 30: '2h', all: '1d' }
+const TF_SEC = {
+  '1min': 60, '5min': 300, '15min': 900, '30min': 1800,
+  '1h': 3600, '2h': 7200, '4h': 14400, '1d': 86400,
+}
 
 const fmtTime = (iso, tz) => new Date(iso).toLocaleString('en-AU', {
   timeZone: tz, day: '2-digit', month: 'short',
   hour: '2-digit', minute: '2-digit', hour12: false,
 })
 
+// seconds to ADD to a unix time so the chart's UTC-rendered axis reads as
+// the chosen timezone (cached per hour — offsets only change at DST edges)
+const _tzCache = new Map()
+function tzOffset(tz, sec) {
+  if (!tz || tz === 'UTC') return 0
+  const bucket = `${tz}:${Math.floor(sec / 3600)}`
+  let off = _tzCache.get(bucket)
+  if (off === undefined) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit',
+    }).formatToParts(new Date(sec * 1000))
+      .reduce((o, p) => ((o[p.type] = p.value), o), {})
+    off = Date.UTC(+parts.year, +parts.month - 1, +parts.day,
+      +parts.hour, +parts.minute) / 1000 - sec
+    _tzCache.set(bucket, off)
+  }
+  return off
+}
+
 function SetupCurve({ runId, days, symbol, onClose }) {
   const [trades, setTrades] = useState(null)
   const [candles, setCandles] = useState(null)
   const [pl, setPl] = useState(null)
   const [err, setErr] = useState(null)
+  const [tfSel, setTfSel] = useState(null)
+  const [tz, setTz] = useState('UTC')
+  const [focus, setFocus] = useState(null)
   const crypto = /USD[TC]$/.test(symbol)
   const marketTz = crypto ? 'UTC' : 'America/New_York'
-  const tf = CHART_TF[days ?? 'all']
+  const tf = tfSel ?? CHART_TF[days ?? 'all']
+  const TZS = crypto
+    ? [['UTC', 'UTC'], ['Australia/Melbourne', 'Melbourne']]
+    : [['UTC', 'UTC'], ['America/New_York', 'New York'],
+       ['Australia/Melbourne', 'Melbourne']]
 
   useEffect(() => {
-    setTrades(null); setCandles(null); setPl(null); setErr(null)
+    setTrades(null); setPl(null); setErr(null)
     ;(async () => {
       try {
-        const [tr, cr, pr] = await Promise.all([
+        const [tr, pr] = await Promise.all([
           fetch(`/api/trades/${runId}`),
-          fetch(`/api/candles/${symbol}?tf=${tf}${days ? `&days=${days}` : ''}`),
           fetch(`/api/curve/${runId}`),
         ])
-        if (!tr.ok || !cr.ok) throw new Error('failed to load trade data')
+        if (!tr.ok) throw new Error('failed to load trade data')
         setTrades(await tr.json())
-        setCandles(await cr.json())
         if (pr.ok) setPl(await pr.json())
       } catch (e) {
         setErr(String(e.message || e))
       }
     })()
-  }, [runId, days, symbol, tf])
+  }, [runId])
+
+  // candles refetch alone on timeframe change, so a selected trade stays
+  // selected while you zoom into finer candles
+  useEffect(() => {
+    setCandles(null)
+    ;(async () => {
+      try {
+        const cr = await fetch(
+          `/api/candles/${symbol}?tf=${tf}${days ? `&days=${days}` : ''}`)
+        if (!cr.ok) throw new Error('failed to load candles')
+        setCandles(await cr.json())
+      } catch (e) {
+        setErr(String(e.message || e))
+      }
+    })()
+  }, [days, symbol, tf])
+
+  useEffect(() => { setFocus(null) }, [runId, days])
 
   const windowTrades = useMemo(() => {
     if (!trades || !candles?.length) return null
@@ -105,31 +152,52 @@ function SetupCurve({ runId, days, symbol, onClose }) {
     return trades.filter((t) => Date.parse(t.entry_ts) / 1000 >= startSec)
   }, [trades, candles])
 
+  // chart data with the axis re-based to the chosen timezone
+  const displayCandles = useMemo(() => {
+    if (!candles) return null
+    return candles.map((c) => ({ ...c, time: c.time + tzOffset(tz, c.time) }))
+  }, [candles, tz])
+
   const markers = useMemo(() => {
     if (!windowTrades) return []
     const m = []
     for (const t of windowTrades) {
       const long = t.side === 'long'
       const ret = t.net_return_pct ?? t.return_pct
+      const focused = focus != null && t.entry_ts === focus.entry_ts &&
+        t.exit_ts === focus.exit_ts
+      const eSec = Math.floor(Date.parse(t.entry_ts) / 1000)
       m.push({
-        time: Math.floor(Date.parse(t.entry_ts) / 1000),
+        time: eSec + tzOffset(tz, eSec),
         position: long ? 'belowBar' : 'aboveBar',
-        color: long ? '#1baf7a' : '#e34948',
+        color: focused ? '#e8b93c' : long ? '#1baf7a' : '#e34948',
         shape: long ? 'arrowUp' : 'arrowDown',
         text: long ? 'L' : 'S',
+        size: focused ? 2 : 1,
       })
       if (t.exit_ts) {
+        const xSec = Math.floor(Date.parse(t.exit_ts) / 1000)
         m.push({
-          time: Math.floor(Date.parse(t.exit_ts) / 1000),
+          time: xSec + tzOffset(tz, xSec),
           position: long ? 'aboveBar' : 'belowBar',
-          color: (ret ?? 0) >= 0 ? '#1baf7a' : '#e34948',
-          shape: 'circle',
+          color: focused ? '#e8b93c' : (ret ?? 0) >= 0 ? '#1baf7a' : '#e34948',
+          shape: focused ? 'square' : 'circle',
           text: `${ret > 0 ? '+' : ''}${ret?.toFixed(2)}%`,
+          size: focused ? 2 : 1,
         })
       }
     }
     return m
-  }, [windowTrades])
+  }, [windowTrades, focus, tz])
+
+  // zoom window around the selected trade (~40 bars either side)
+  const range = useMemo(() => {
+    if (!focus) return null
+    const pad = 40 * (TF_SEC[tf] || 3600)
+    const e = Math.floor(Date.parse(focus.entry_ts) / 1000)
+    const x = focus.exit_ts ? Math.floor(Date.parse(focus.exit_ts) / 1000) : e
+    return { from: e + tzOffset(tz, e) - pad, to: x + tzOffset(tz, x) + pad }
+  }, [focus, tf, tz])
 
   // compound the stake trade by trade: each trade reinvests the running
   // balance, so the next trade uses the result of the previous P&L
@@ -149,7 +217,7 @@ function SetupCurve({ runId, days, symbol, onClose }) {
   return (
     <div className="card">
       <h3>
-        {symbol} — triggers on the chart ({tf} candles, chart times UTC)
+        {symbol} — triggers on the chart
         <button className="btn ghost" style={{ float: 'right' }}
           onClick={onClose}>close</button>
       </h3>
@@ -158,7 +226,23 @@ function SetupCurve({ runId, days, symbol, onClose }) {
       {!candles && !err && <p className="hint">loading chart + trades…</p>}
       {candles && (
         <>
-          <div style={{ marginBottom: 6 }}>
+          <div className="controls" style={{ marginBottom: 6 }}>
+            <div className="select-pill">
+              <select value={tf} onChange={(e) => setTfSel(e.target.value)}
+                aria-label="chart timeframe">
+                {Object.keys(TF_SEC).map((t) => (
+                  <option key={t} value={t}>{t} candles</option>
+                ))}
+              </select>
+            </div>
+            <div className="select-pill">
+              <select value={tz} onChange={(e) => setTz(e.target.value)}
+                aria-label="chart timezone">
+                {TZS.map(([id, label]) => (
+                  <option key={id} value={id}>chart time: {label}</option>
+                ))}
+              </select>
+            </div>
             <span className="chip">
               triggers in period: <b style={{ marginLeft: 4 }}>{windowTrades?.length ?? 0}</b>
             </span>
@@ -170,7 +254,13 @@ function SetupCurve({ runId, days, symbol, onClose }) {
               </span>
             )}
           </div>
-          <CandleChart candles={candles} markers={markers} />
+          <p className="hint" style={{ margin: '0 0 6px' }}>
+            ▲ L = long entry (signal fired) · ▼ S = short entry ·
+            ● = exit, labelled with the trade's net P&L % · gold ■ = the trade
+            selected below — click a trigger row to zoom to it, click again to
+            zoom out
+          </p>
+          <CandleChart candles={displayCandles} markers={markers} range={range} />
           <h3 style={{ marginTop: 14 }}>Trigger log{' '}
             <span className="hint">(cross-check in TradingView — market time is
               {crypto ? ' UTC' : ' New York'} · P&L is net of{' '}
@@ -188,20 +278,26 @@ function SetupCurve({ runId, days, symbol, onClose }) {
               </tr>
             </thead>
             <tbody>
-              {(ledger?.rows || []).slice().reverse().slice(0, 100).map((t, i) => (
-                <tr key={i}>
-                  <td className="txt">{fmtTime(t.entry_ts, 'Australia/Melbourne')}</td>
-                  <td className="txt">{fmtTime(t.entry_ts, marketTz)}</td>
-                  <td className="txt">{t.side}</td>
-                  <td>{t.entry_price}</td>
-                  <td className="txt">{t.exit_ts ? fmtTime(t.exit_ts, marketTz) : 'open'}</td>
-                  <td>{t.exit_price ?? '—'}</td>
-                  <td>{num(t.stake, 2)}</td>
-                  <td>{t.net_return_pct != null ? <Ret v={t.net_return_pct} /> : '—'}</td>
-                  <td><Money v={t.pnl} /></td>
-                  <td>{num(t.equity, 2)}</td>
-                </tr>
-              ))}
+              {(ledger?.rows || []).slice().reverse().slice(0, 100).map((t, i) => {
+                const focused = focus != null && t.entry_ts === focus.entry_ts &&
+                  t.exit_ts === focus.exit_ts
+                return (
+                  <tr key={i} className="selectable"
+                    style={focused ? { background: 'rgba(232,185,60,.14)' } : undefined}
+                    onClick={() => setFocus(focused ? null : t)}>
+                    <td className="txt">{fmtTime(t.entry_ts, 'Australia/Melbourne')}</td>
+                    <td className="txt">{fmtTime(t.entry_ts, marketTz)}</td>
+                    <td className="txt">{t.side}</td>
+                    <td>{t.entry_price}</td>
+                    <td className="txt">{t.exit_ts ? fmtTime(t.exit_ts, marketTz) : 'open'}</td>
+                    <td>{t.exit_price ?? '—'}</td>
+                    <td>{num(t.stake, 2)}</td>
+                    <td>{t.net_return_pct != null ? <Ret v={t.net_return_pct} /> : '—'}</td>
+                    <td><Money v={t.pnl} /></td>
+                    <td>{num(t.equity, 2)}</td>
+                  </tr>
+                )
+              })}
             </tbody>
             {ledger && (
               <tfoot>

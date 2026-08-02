@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react'
 import { createChart } from 'lightweight-charts'
 
-// TradingView-style candlestick chart with trade markers.
-export default function CandleChart({ candles, markers, height = 420 }) {
+// TradingView-style candlestick chart with trade markers. `range`
+// ({from, to} unix seconds) zooms the view to that window; null fits all.
+export default function CandleChart({ candles, markers, height = 420, range = null }) {
   const ref = useRef(null)
 
   useEffect(() => {
@@ -31,13 +32,21 @@ export default function CandleChart({ candles, markers, height = 420 }) {
     if (markers?.length) {
       series.setMarkers([...markers].sort((a, b) => a.time - b.time))
     }
-    chart.timeScale().fitContent()
+    if (range) {
+      try {
+        chart.timeScale().setVisibleRange(range)
+      } catch {
+        chart.timeScale().fitContent()
+      }
+    } else {
+      chart.timeScale().fitContent()
+    }
     const ro = new ResizeObserver(() => {
       if (ref.current) chart.applyOptions({ width: ref.current.clientWidth })
     })
     ro.observe(ref.current)
     return () => { ro.disconnect(); chart.remove() }
-  }, [candles, markers, height])
+  }, [candles, markers, height, range])
 
   return <div ref={ref} style={{ width: '100%' }} />
 }
