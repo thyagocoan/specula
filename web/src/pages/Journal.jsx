@@ -98,9 +98,12 @@ const VIEWS = [
 const CAPS = [0, 1, 2, 3, 5, 10]
 const WEEK_WINDOWS = [[0, 'All time'], [4, 'Last 4 weeks'],
   [8, 'Last 8 weeks'], [12, 'Last 12 weeks'], [26, 'Last 26 weeks']]
-const SPLITS = [[1, '1 trade (100%)'], [2, '2 trades (50% each)'],
-  [3, '3 trades (33% each)'], [4, '4 trades (25% each)'],
-  [5, '5 trades (20% each)']]
+const SPLITS = Array.from({ length: 10 }, (_, i) => {
+  const n = i + 1
+  return [n, n === 1
+    ? '1 trade (100%)'
+    : `${n} trades (${Number((100 / n).toFixed(1))}% each)`]
+})
 
 // Chronological trade journal grouped by ISO week (Melbourne time) with a
 // concurrency sweep and an execution cap: with "max open trades" set, the
