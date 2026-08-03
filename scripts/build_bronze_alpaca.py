@@ -103,8 +103,11 @@ def main() -> int:
             print(f"[warn] {symbol}: no bars", flush=True)
             continue
         if sessions is None:
-            lo = bronze["ts"].min().strftime("%Y-%m-%d")
-            hi = bronze["ts"].max().strftime("%Y-%m-%d")
+            # span from the SILVER frame: backfills download adjusted-only,
+            # so bronze/raw may cover a much shorter window than silver —
+            # a bronze-derived calendar mis-tags all older bars as "closed"
+            lo = min(bronze["ts"].min(), silver["ts"].min()).strftime("%Y-%m-%d")
+            hi = max(bronze["ts"].max(), silver["ts"].max()).strftime("%Y-%m-%d")
             sessions = session_table(lo, hi)
         silver = tag_sessions(silver, sessions)
         b = write_partitioned(bronze, DATA_ROOT / "bronze" / "equity" / f"symbol={symbol}")
