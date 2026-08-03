@@ -614,8 +614,11 @@ def get_paper():
     total = 0.0
     wins = closed = 0
     for t in trades:
-        t["setup"] = cfg_label(t["cfg"]) if t["cfg"] else "—"
-        t["exec_tf"] = (t["cfg"] or {}).get("exec_tf")
+        cfg = t["cfg"] or {}
+        t["setup"] = cfg_label(cfg) if cfg else "—"
+        t["exec_tf"] = cfg.get("exec_tf")
+        t["setup_tf"] = cfg.get("setup_tf")
+        t["bb_dev"] = cfg.get("dev")  # the setup's Bollinger deviation
         del t["cfg"]
         if t["status"] != "closed" or t["pnl_usd"] is None:
             continue
@@ -645,10 +648,12 @@ def get_paper():
 
 
 @app.get("/api/candles_recent/{symbol}")
-def get_candles_recent(symbol: str, tf: str = "30min", days: float = 5):
+def get_candles_recent(symbol: str, tf: str = "30min", days: float = 5,
+                       bb: float = 0.0):
     """Recent candles straight from Alpaca — the lake updates nightly, but
     validating today's paper trades needs same-day bars. RTH-only,
-    session-aligned, same shape as /api/candles."""
+    session-aligned, same shape as /api/candles. bb>0 adds Bollinger(20, bb)
+    computed on this timeframe."""
     if tf not in CANDLE_TFS:
         raise HTTPException(400, f"tf must be one of {sorted(CANDLE_TFS)}")
     import math as _m
@@ -675,15 +680,30 @@ def get_candles_recent(symbol: str, tf: str = "30min", days: float = 5):
     if df.empty:
         raise HTTPException(404, f"no session bars for {sym}")
     out = resample_equity(df, tf)
+    cols = []
+    if bb > 0:
+        close = out["close"]
+        mid = close.rolling(20).mean()
+        sd = close.rolling(20).std(ddof=0)
+        out = out.copy()
+        out["bb_mid"] = mid
+        out["bb_up"] = mid + bb * sd
+        out["bb_lo"] = mid - bb * sd
+        cols = ["bb_mid", "bb_up", "bb_lo"]
 
     def _f(v):
         v = float(v)
         return round(v, 6) if _m.isfinite(v) else None
 
-    return [{"time": int(ts.timestamp()), "open": _f(r["open"]),
-             "high": _f(r["high"]), "low": _f(r["low"]),
-             "close": _f(r["close"])}
-            for ts, r in zip(out.index, out.to_dict("records"))]
+    res = []
+    for ts, r in zip(out.index, out.to_dict("records")):
+        row = {"time": int(ts.timestamp()), "open": _f(r["open"]),
+               "high": _f(r["high"]), "low": _f(r["low"]),
+               "close": _f(r["close"])}
+        for c in cols:
+            row[c] = _f(r[c])
+        res.append(row)
+    return res
 
 
 READINESS_JSON = Path("data/meta/readiness.json")

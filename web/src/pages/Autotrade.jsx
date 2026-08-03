@@ -120,19 +120,21 @@ function MarketClock() {
   )
 }
 
-// validate one paper trade on a chart: entry/exit/stop/target drawn as
-// price lines, markers at the exact fill moments, TradingView deep-link
-function PaperTradeChart({ trade, onClose }) {
+// one timeframe pane of the validation grid: candles + the setup's
+// Bollinger bands + fill markers snapped to bars + level lines
+const PANE_DAYS = { '2h': 25, '1h': 15, '30min': 10, '5min': 5 }
+
+function TradePane({ trade, tf }) {
   const [candles, setCandles] = useState(null)
   const [err, setErr] = useState(null)
-  const tf = trade.exec_tf || '30min'
+  const dev = trade.bb_dev || 2.0
 
   useEffect(() => {
     setCandles(null); setErr(null)
     ;(async () => {
       try {
-        const r = await fetch(
-          `/api/candles_recent/${trade.symbol}?tf=${tf}&days=5`)
+        const r = await fetch(`/api/candles_recent/${trade.symbol}?tf=${tf}`
+          + `&days=${PANE_DAYS[tf] || 10}&bb=${dev}`)
         if (!r.ok) {
           const d = await r.json().catch(() => ({}))
           throw new Error(d?.detail || `API error ${r.status}`)
@@ -142,27 +144,35 @@ function PaperTradeChart({ trade, onClose }) {
         setErr(String(e.message || e))
       }
     })()
-  }, [trade.id])
+  }, [trade.id, tf])
 
-  const shifted = useMemo(() => candles?.map((c) => ({
-    ...c, time: c.time + nyShift(c.time),
-  })), [candles])
-
-  const markers = useMemo(() => {
-    const m = []
+  const view = useMemo(() => {
+    if (!candles) return null
+    const shifted = candles.map((c) => ({
+      ...c, time: c.time + nyShift(c.time),
+    }))
+    const times = shifted.map((c) => c.time)
+    const snap = (sec) => { // markers must sit on an existing bar
+      let lo = 0
+      for (let i = 0; i < times.length; i++) {
+        if (times[i] <= sec) lo = i
+        else break
+      }
+      return times[lo]
+    }
     const long = trade.side === 'long'
     const e = Math.floor(Date.parse(trade.entry_ts) / 1000)
-    m.push({
-      time: e + nyShift(e),
+    const markers = [{
+      time: snap(e + nyShift(e)),
       position: long ? 'belowBar' : 'aboveBar',
       color: long ? '#1baf7a' : '#e34948',
       shape: long ? 'arrowUp' : 'arrowDown',
       text: long ? 'L' : 'S', size: 2,
-    })
+    }]
     if (trade.exit_ts) {
       const x = Math.floor(Date.parse(trade.exit_ts) / 1000)
-      m.push({
-        time: x + nyShift(x),
+      markers.push({
+        time: snap(x + nyShift(x)),
         position: long ? 'aboveBar' : 'belowBar',
         color: (trade.pnl_pct ?? 0) >= 0 ? '#1baf7a' : '#e34948',
         shape: 'circle',
@@ -170,8 +180,20 @@ function PaperTradeChart({ trade, onClose }) {
         size: 2,
       })
     }
-    return m
-  }, [trade])
+    const pick = (key) => shifted.filter((c) => c[key] != null)
+      .map((c) => ({ time: c.time, value: c[key] }))
+    const lines = [
+      { name: `BB mid`, color: '#4f83e0', points: pick('bb_mid') },
+      { name: `BB +${dev}σ`, color: '#8a68c9', points: pick('bb_up') },
+      { name: `BB -${dev}σ`, color: '#18a0a8', points: pick('bb_lo') },
+    ].filter((l) => l.points.length)
+    const pad = 25 * (TF_SEC[tf] || 1800)
+    const x = trade.exit_ts
+      ? Math.floor(Date.parse(trade.exit_ts) / 1000)
+      : Math.floor(Date.now() / 1000)
+    const range = { from: e + nyShift(e) - pad, to: x + nyShift(x) + pad }
+    return { shifted, markers, lines, range }
+  }, [candles, trade])
 
   const priceLines = useMemo(() => {
     const out = [{ price: trade.entry_price,
@@ -191,43 +213,62 @@ function PaperTradeChart({ trade, onClose }) {
     return out
   }, [trade])
 
-  const range = useMemo(() => {
-    const pad = 30 * (TF_SEC[tf] || 1800)
-    const e = Math.floor(Date.parse(trade.entry_ts) / 1000)
-    const x = trade.exit_ts
-      ? Math.floor(Date.parse(trade.exit_ts) / 1000)
-      : Math.floor(Date.now() / 1000)
-    return { from: e + nyShift(e) - pad, to: x + nyShift(x) + pad }
-  }, [trade, tf])
+  const role = tf === trade.setup_tf ? 'setup TF'
+    : tf === trade.exec_tf ? 'exec TF' : null
 
+  return (
+    <div style={{ minWidth: 0 }}>
+      <p style={{ margin: '0 0 4px' }}>
+        <b>{tf}</b>{' '}
+        {role && <span className="badge done">{role}</span>}{' '}
+        <span className="hint">BB(20, {dev})</span>
+      </p>
+      {err && <p className="neg">{err}</p>}
+      {!candles && !err && <p className="hint">loading…</p>}
+      {view && (
+        <CandleChart candles={view.shifted} markers={view.markers}
+          range={view.range} priceLines={priceLines} lines={view.lines}
+          height={300} />
+      )}
+    </div>
+  )
+}
+
+// validate one paper trade across four timeframes at once, with the
+// setup's own Bollinger bands on every pane
+function PaperTradeChart({ trade, onClose }) {
   const tvUrl = `https://www.tradingview.com/chart/?symbol=${
-    encodeURIComponent(trade.symbol)}&interval=${TV_INTERVAL[tf] || '30'}`
+    encodeURIComponent(trade.symbol)}&interval=${
+    TV_INTERVAL[trade.exec_tf] || '30'}`
 
   return (
     <div className="card">
       <h3>
-        {trade.symbol} {trade.side} — trade #{trade.id} on the chart{' '}
-        <span className="hint">({tf} candles · New York time)</span>
+        {trade.symbol} {trade.side} — trade #{trade.id} across timeframes{' '}
+        <span className="hint">(New York time)</span>
         <span style={{ float: 'right' }}>
           <a className="btn ghost" href={tvUrl} target="_blank"
             rel="noreferrer"
-            title="opens TradingView on this symbol/timeframe — the level lines are drawn here (TradingView URLs can't carry drawings)">
+            title="opens TradingView on this symbol — level lines are drawn here (TradingView URLs can't carry drawings)">
             Open in TradingView ↗
           </a>{' '}
           <button className="btn ghost" onClick={onClose}>close</button>
         </span>
       </h3>
-      <p className="hint" style={{ margin: '0 0 6px' }}>
+      <p className="hint" style={{ margin: '0 0 8px' }}>
         {trade.setup} · gold = entry/exit fills · red = stop · green = fixed
-        target{trade.tp == null ? ' (this setup targets the moving midband — no fixed line)' : ''}
-        {' '}· cross-check the same levels on TradingView with the button
+        target{trade.tp == null ? ' (this setup targets the moving midband)' : ''}
+        {' '}· each pane computes BB(20, {trade.bb_dev || 2.0}) on its own
+        timeframe — validate the pattern on the setup TF, the fill on the
+        faster ones
       </p>
-      {err && <p className="neg">{err}</p>}
-      {!candles && !err && <p className="hint">loading recent bars…</p>}
-      {shifted && (
-        <CandleChart candles={shifted} markers={markers} range={range}
-          priceLines={priceLines} height={380} />
-      )}
+      <div style={{
+        display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14,
+      }}>
+        {['2h', '1h', '30min', '5min'].map((tf) => (
+          <TradePane key={tf} trade={trade} tf={tf} />
+        ))}
+      </div>
     </div>
   )
 }
