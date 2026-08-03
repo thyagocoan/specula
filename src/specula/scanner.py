@@ -27,7 +27,7 @@ import pandas as pd
 NY = ZoneInfo("America/New_York")
 
 from specula import mtf, paper, runlog
-from specula.data import is_equity, resample_ohlcv
+from specula.data import is_equity, resample_equity, resample_ohlcv
 
 STATE = Path("data/meta/scanner_state.json")
 WF = Path("data/meta/walkforward.json")
@@ -185,10 +185,26 @@ def resolve_cfg(row: dict) -> dict | None:
 
 # ------------------------------------------------------------- signal checks
 
-def latest_setup_signal(cfg: dict, bars_1m: pd.DataFrame):
+def setup_frame(symbol: str, tf: str, bars_1m: pd.DataFrame) -> pd.DataFrame:
+    """Setup-TF candles exactly as the backtest builds them: session-aligned
+    for stocks, and NEVER including the still-forming bar during the session
+    — patterns only exist on CLOSED candles (BMY 2026-08-03 lesson)."""
+    df = (resample_equity(bars_1m, tf) if is_equity(symbol)
+          else resample_ohlcv(bars_1m, tf))
+    ny = datetime.now(NY)
+    in_session = (ny.weekday() < 5
+                  and (9 * 60 + 30) <= ny.hour * 60 + ny.minute < 16 * 60)
+    if in_session and len(df):
+        df = df.iloc[:-1]
+    return df
+
+
+def latest_setup_signal(cfg: dict, bars_1m: pd.DataFrame,
+                        symbol: str | None = None):
     """Most recent armed signal for fffd/didi cfgs on the live window.
     Returns (direction, trigger, stop, signal_ts) or None."""
-    setup_df = resample_ohlcv(bars_1m, cfg["setup_tf"])
+    setup_df = setup_frame(symbol or cfg.get("symbol", ""),
+                           cfg["setup_tf"], bars_1m)
     if len(setup_df) < 30:
         return None
     if cfg["strategy"] == "fffd":
@@ -215,12 +231,14 @@ def latest_setup_signal(cfg: dict, bars_1m: pd.DataFrame):
             None if stop is None else float(stop), str(ts))
 
 
-def band_exit_level(cfg: dict, bars_1m: pd.DataFrame, side: str) -> float | None:
+def band_exit_level(cfg: dict, bars_1m: pd.DataFrame, side: str,
+                    symbol: str | None = None) -> float | None:
     """Live Bollinger exit level for fffd band targets, from the last
-    COMPLETED setup bar (the live bar is still forming)."""
-    setup_df = resample_ohlcv(bars_1m, cfg["setup_tf"])
+    COMPLETED session-aligned setup bar."""
+    setup_df = setup_frame(symbol or cfg.get("symbol", ""),
+                           cfg["setup_tf"], bars_1m)
     close = setup_df["close"]
-    if len(close) < 22:
+    if len(close) < 21:
         return None
     mid = close.rolling(20).mean()
     if cfg.get("target") == "midband":
@@ -229,7 +247,7 @@ def band_exit_level(cfg: dict, bars_1m: pd.DataFrame, side: str) -> float | None
         sd = close.rolling(20).std(ddof=0)
         dev = cfg.get("dev", 2.0)
         band = mid + dev * sd if side == "long" else mid - dev * sd
-    val = band.iloc[-2]
+    val = band.iloc[-1]  # setup_frame already excludes the forming bar
     return None if pd.isna(val) else float(val)
 
 
@@ -274,7 +292,7 @@ def scan_once(send) -> None:
                 cfgp = pos.get("cfg") or {}
                 if (hit is None and cfgp.get("strategy") == "fffd"
                         and cfgp.get("target") in ("midband", "upper")):
-                    lvl = band_exit_level(cfgp, bars, pos["side"])
+                    lvl = band_exit_level(cfgp, bars, pos["side"], symbol)
                     if lvl is not None:
                         if pos["side"] == "long" and price >= lvl:
                             hit = (lvl, "band-target")
@@ -299,7 +317,7 @@ def scan_once(send) -> None:
             cfg = resolve_cfg(row)
             if cfg is None:
                 continue
-            res = latest_setup_signal(cfg, bars)
+            res = latest_setup_signal(cfg, bars, symbol)
             if res == "unsupported":
                 if not sym_state.get("warned_unsupported"):
                     sym_state["warned_unsupported"] = True
