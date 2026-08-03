@@ -13,6 +13,85 @@ const fmtNY = (iso) => iso ? new Date(iso).toLocaleString('en-AU', {
   hour: '2-digit', minute: '2-digit', hour12: false,
 }) : '—'
 
+// live New York clock + market-open countdown (regular session 09:30–16:00;
+// US holidays not modelled — on holidays the scanner simply sees no bars)
+function MarketClock() {
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  const p = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hourCycle: 'h23', weekday: 'short',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(new Date(now))
+    .reduce((o, x) => ((o[x.type] = x.value), o), {})
+  const daySec = (+p.hour) * 3600 + (+p.minute) * 60 + (+p.second)
+  const WD = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 }
+  const wd = WD[p.weekday]
+  const OPEN = 9.5 * 3600
+  const CLOSE = 16 * 3600
+  const isWeekday = wd <= 4
+
+  let state, delta
+  if (isWeekday && daySec >= OPEN && daySec < CLOSE) {
+    state = 'open'
+    delta = CLOSE - daySec
+  } else if (isWeekday && daySec < OPEN) {
+    state = 'preopen'
+    delta = OPEN - daySec
+  } else {
+    state = 'closed'
+    const fullDays = wd === 4 ? 2 : wd === 5 ? 1 : 0 // Fri→Sat+Sun, Sat→Sun
+    delta = (86400 - daySec) + fullDays * 86400 + OPEN
+  }
+  const hh = Math.floor(delta / 3600)
+  const mm = Math.floor((delta % 3600) / 60)
+  const ss = delta % 60
+  const cd = `${hh}h ${String(mm).padStart(2, '0')}m ${String(ss).padStart(2, '0')}s`
+
+  const nyClock = new Date(now).toLocaleTimeString('en-GB', {
+    timeZone: 'America/New_York', hour12: false,
+  })
+  const nyDate = new Date(now).toLocaleDateString('en-AU', {
+    timeZone: 'America/New_York', weekday: 'long', day: 'numeric',
+    month: 'short',
+  })
+
+  return (
+    <div className="card">
+      <div style={{
+        display: 'flex', gap: 24, alignItems: 'baseline', flexWrap: 'wrap',
+      }}>
+        <span>
+          <span className="hint">New York · {nyDate} · </span>
+          <b style={{ fontSize: 26, fontVariantNumeric: 'tabular-nums' }}>
+            {nyClock}</b>
+        </span>
+        {state === 'open' && (
+          <span><span className="badge done">MARKET OPEN</span>{' '}
+            <span className="hint">closes in</span>{' '}
+            <b style={{ fontVariantNumeric: 'tabular-nums' }}>{cd}</b></span>
+        )}
+        {state === 'preopen' && (
+          <span><span className="badge running">PRE-MARKET</span>{' '}
+            <span className="hint">opens in</span>{' '}
+            <b style={{ fontVariantNumeric: 'tabular-nums' }}>{cd}</b></span>
+        )}
+        {state === 'closed' && (
+          <span><span className="badge failed">CLOSED</span>{' '}
+            <span className="hint">opens in</span>{' '}
+            <b style={{ fontVariantNumeric: 'tabular-nums' }}>{cd}</b></span>
+        )}
+        <span className="hint">
+          scanner trades 09:30–15:30 NY · flat by 15:55
+        </span>
+      </div>
+    </div>
+  )
+}
+
 // live paper-trading results: daily balance + full trade history
 function PaperHistory() {
   const [doc, setDoc] = useState(null)
@@ -83,6 +162,65 @@ function PaperHistory() {
         )}
       </div>
 
+      {(() => {
+        const open = (doc.trades || []).filter((t) => t.status === 'open')
+        if (!open.length) return null
+        return (
+          <div className="card">
+            <h3>Open positions — live progress{' '}
+              <span className="hint">(prices ~15 min delayed)</span></h3>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="grid">
+                <thead>
+                  <tr>
+                    <th className="txt">Opened (NY)</th>
+                    <th className="txt">Symbol</th>
+                    <th className="txt">Setup</th>
+                    <th className="txt">Side</th>
+                    <th>Size $</th>
+                    <th>Entry px</th>
+                    <th>Now</th>
+                    <th>Unreal P&L $</th>
+                    <th>Unreal %</th>
+                    <th>Stop</th>
+                    <th className="txt">Target</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {open.map((t) => {
+                    const stopDist = t.sl && t.last_price
+                      ? Math.abs(100 * (t.last_price - t.sl) / t.last_price)
+                      : null
+                    return (
+                      <tr key={t.id}>
+                        <td className="txt">{fmtNY(t.entry_ts)}</td>
+                        <td className="txt"><b>{t.symbol}</b></td>
+                        <td className="txt hint" style={{
+                          maxWidth: 280, whiteSpace: 'normal',
+                        }}>{t.setup}</td>
+                        <td className="txt">{t.side}</td>
+                        <td>{num(t.qty * t.entry_price, 0)}</td>
+                        <td>{num(t.entry_price, 4)}</td>
+                        <td>{t.last_price ? num(t.last_price, 4) : '—'}</td>
+                        <td><Money v={t.unreal_usd} /></td>
+                        <td>{t.unreal_pct != null
+                          ? <span className={t.unreal_pct >= 0 ? 'pos' : 'neg'}>
+                            {num(t.unreal_pct, 2)}%</span>
+                          : '—'}</td>
+                        <td>{t.sl ? `${num(t.sl, 4)}${stopDist != null
+                          ? ` (${num(stopDist, 2)}% away)` : ''}` : '—'}</td>
+                        <td className="txt hint">{t.tp
+                          ? num(t.tp, 4) : 'midband (dynamic)'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )
+      })()}
+
       <div className="card">
         <h3>Trade history</h3>
         <div className="filters">
@@ -112,6 +250,7 @@ function PaperHistory() {
                   <th className="txt">Symbol</th>
                   <th className="txt">Setup</th>
                   <th className="txt">Side</th>
+                  <th>Size $</th>
                   <th>Entry px</th>
                   <th className="txt">Exit (NY)</th>
                   <th>Exit px</th>
@@ -129,6 +268,7 @@ function PaperHistory() {
                       maxWidth: 320, whiteSpace: 'normal',
                     }}>{t.setup}</td>
                     <td className="txt">{t.side}</td>
+                    <td>{num(t.qty * t.entry_price, 0)}</td>
                     <td>{num(t.entry_price, 4)}</td>
                     <td className="txt">{t.status === 'open'
                       ? <span className="badge running">open</span>
@@ -261,6 +401,8 @@ export default function Autotrade() {
           <span className={msg.ok ? 'pos' : 'neg'}>{msg.text}</span>
         </div>
       )}
+
+      <MarketClock />
 
       <PaperHistory />
 

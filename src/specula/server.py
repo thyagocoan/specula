@@ -581,7 +581,8 @@ SECTORS_JSON = Path("data/meta/sectors.json")
 
 @app.get("/api/paper")
 def get_paper():
-    """Paper-trading history + daily balance for the portal."""
+    """Paper-trading history + daily balance for the portal. Open trades
+    carry the scanner's last seen price and unrealized P&L."""
     from collections import defaultdict
     from zoneinfo import ZoneInfo
 
@@ -589,6 +590,24 @@ def get_paper():
     from specula.sweeps import cfg_label
 
     trades = paper.history()
+    try:
+        scanner_state = json.loads(
+            Path("data/meta/scanner_state.json").read_text(encoding="utf-8"))
+    except Exception:
+        scanner_state = {}
+    last_prices = {s: v.get("last_price")
+                   for s, v in scanner_state.get("symbols", {}).items()}
+    for t in trades:
+        if t["status"] != "open":
+            continue
+        last = last_prices.get(t["symbol"])
+        t["last_price"] = last
+        if last:
+            sign = 1 if t["side"] == "long" else -1
+            t["unreal_usd"] = round(sign * (last - t["entry_price"])
+                                    * t["qty"], 2)
+            t["unreal_pct"] = round(
+                100 * sign * (last - t["entry_price"]) / t["entry_price"], 2)
     ny = ZoneInfo("America/New_York")
     days: dict[str, dict] = defaultdict(
         lambda: {"trades": 0, "wins": 0, "pnl": 0.0})
