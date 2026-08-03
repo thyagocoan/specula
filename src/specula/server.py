@@ -539,9 +539,16 @@ def sync_approved(u: RosterSync):
     if not enabled:
         raise HTTPException(404, "no league registry rows for the approved "
                                  "setups — run the league first")
+    # the sync is authoritative: anything previously enabled that is not in
+    # this assignment (demoted setups, stale entries) gets disabled
+    keep_syms = {e["symbol"] for e in enabled}
+    stale = [r["symbol"] for r in runlog.autotrade_list()
+             if r["enabled"] and r["symbol"] not in keep_syms]
+    for sym in stale:
+        runlog.autotrade_set(sym, False)
     return {"ok": True, "enabled": sorted(enabled, key=lambda x: x["symbol"]),
-            "note": f"{len(enabled)} symbols on the roster "
-                    f"({matched} league rows matched)"}
+            "note": f"{len(enabled)} symbols on the roster, {len(stale)} "
+                    f"stale entries disabled ({matched} league rows matched)"}
 
 
 class FavSetupUpdate(BaseModel):

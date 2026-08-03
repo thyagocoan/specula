@@ -75,33 +75,86 @@ def crypto_bars(symbol: str, limit: int = 720) -> pd.DataFrame:
     return df.set_index("ts")
 
 
-def stock_bars(symbol: str) -> pd.DataFrame | None:
+WINDOW_DAYS = 25  # enough completed bars for a 2h setup TF (needs 30+ bars)
+_bars_cache: dict[str, pd.DataFrame] = {}
+
+
+def _alpaca_fetch(symbols: list[str], start, end) -> dict[str, list]:
+    """Multi-symbol paginated bars fetch — one request covers ~50 symbols."""
     key = os.environ.get("ALPACA_KEY_ID")
     sec = os.environ.get("ALPACA_SECRET_KEY")
     if not key or not sec:
-        return None
+        return {}
+    out: dict[str, list] = {}
+    token = None
+    while True:
+        q = {
+            "symbols": ",".join(symbols), "timeframe": "1Min",
+            "start": start.isoformat().replace("+00:00", "Z"),
+            "end": end.isoformat().replace("+00:00", "Z"),
+            "limit": 10000, "adjustment": "raw", "feed": "sip",
+        }
+        if token:
+            q["page_token"] = token
+        req = urllib.request.Request(
+            "https://data.alpaca.markets/v2/stocks/bars?"
+            + urllib.parse.urlencode(q),
+            headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": sec},
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:
+            payload = json.loads(r.read())
+        for sym, bars in (payload.get("bars") or {}).items():
+            out.setdefault(sym, []).extend(bars)
+        token = payload.get("next_page_token")
+        if not token:
+            return out
+        time.sleep(0.35)  # stay under the free-tier rate limit
+
+
+def refresh_stock_bars(symbols: list[str]) -> None:
+    """Keep the in-process bar cache fresh for the whole roster: full window
+    for new symbols, tiny incremental fetch for known ones."""
+    if not symbols:
+        return
     end = datetime.now(timezone.utc) - pd.Timedelta(minutes=16)
-    start = end - pd.Timedelta(days=8)  # enough for SMA20 on a 1h setup TF
-    params = urllib.parse.urlencode({
-        "symbols": symbol, "timeframe": "1Min",
-        "start": start.isoformat().replace("+00:00", "Z"),
-        "end": end.isoformat().replace("+00:00", "Z"),
-        "limit": 10000, "adjustment": "raw", "feed": "sip",
-    })
-    req = urllib.request.Request(
-        f"https://data.alpaca.markets/v2/stocks/bars?{params}",
-        headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": sec},
-    )
-    with urllib.request.urlopen(req, timeout=20) as r:
-        bars = json.loads(r.read()).get("bars", {}).get(symbol, [])
-    if not bars:
-        return None
-    df = pd.DataFrame([{
-        "ts": b["t"], "open": b["o"], "high": b["h"], "low": b["l"],
-        "close": b["c"], "volume": b["v"],
-    } for b in bars])
-    df["ts"] = pd.to_datetime(df["ts"], utc=True)
-    return df.set_index("ts")
+
+    def merge(sym: str, bars: list) -> None:
+        if not bars:
+            return
+        df = pd.DataFrame([{
+            "ts": b["t"], "open": b["o"], "high": b["h"], "low": b["l"],
+            "close": b["c"], "volume": b["v"],
+        } for b in bars])
+        df["ts"] = pd.to_datetime(df["ts"], utc=True)
+        df = df.set_index("ts")
+        prev = _bars_cache.get(sym)
+        if prev is not None:
+            df = pd.concat([prev, df])
+            df = df[~df.index.duplicated(keep="last")].sort_index()
+        cutoff = end - pd.Timedelta(days=WINDOW_DAYS)
+        _bars_cache[sym] = df[df.index >= cutoff]
+
+    fresh = [s for s in symbols if s not in _bars_cache]
+    for i in range(0, len(fresh), 25):
+        chunk = fresh[i:i + 25]
+        for sym, bars in _alpaca_fetch(
+                chunk, end - pd.Timedelta(days=WINDOW_DAYS), end).items():
+            merge(sym, bars)
+        time.sleep(0.35)
+    known = [s for s in symbols if s in _bars_cache and s not in fresh]
+    if known:
+        start = min(_bars_cache[s].index[-1] for s in known) \
+            - pd.Timedelta(minutes=5)
+        for i in range(0, len(known), 50):
+            chunk = known[i:i + 50]
+            for sym, bars in _alpaca_fetch(chunk, start, end).items():
+                merge(sym, bars)
+            time.sleep(0.35)
+
+
+def stock_bars(symbol: str) -> pd.DataFrame | None:
+    df = _bars_cache.get(symbol)
+    return df if df is not None and len(df) else None
 
 
 # ------------------------------------------------------------- cfg resolution
@@ -178,6 +231,13 @@ def scan_once(send) -> None:
     roster = [r for r in runlog.autotrade_list() if r["enabled"]]
     if not roster:
         return
+
+    # one batched refresh per cycle for every stock on the roster
+    try:
+        refresh_stock_bars([r["symbol"] for r in roster
+                            if is_equity(r["symbol"])])
+    except Exception as e:
+        print(f"[scanner] bars refresh: {type(e).__name__}: {e}", flush=True)
 
     for row in roster:
         symbol = row["symbol"]
