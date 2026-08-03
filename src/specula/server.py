@@ -615,6 +615,7 @@ def get_paper():
     wins = closed = 0
     for t in trades:
         t["setup"] = cfg_label(t["cfg"]) if t["cfg"] else "—"
+        t["exec_tf"] = (t["cfg"] or {}).get("exec_tf")
         del t["cfg"]
         if t["status"] != "closed" or t["pnl_usd"] is None:
             continue
@@ -641,6 +642,48 @@ def get_paper():
                      for k, v in sorted(days.items(), reverse=True)],
         },
     }
+
+
+@app.get("/api/candles_recent/{symbol}")
+def get_candles_recent(symbol: str, tf: str = "30min", days: float = 5):
+    """Recent candles straight from Alpaca — the lake updates nightly, but
+    validating today's paper trades needs same-day bars. RTH-only,
+    session-aligned, same shape as /api/candles."""
+    if tf not in CANDLE_TFS:
+        raise HTTPException(400, f"tf must be one of {sorted(CANDLE_TFS)}")
+    import math as _m
+
+    import pandas as pd
+
+    from specula.data import resample_equity
+    from specula.scanner import NY, _alpaca_fetch
+
+    sym = symbol.upper()
+    end = datetime.now(timezone.utc) - pd.Timedelta(minutes=16)
+    bars = _alpaca_fetch([sym], end - pd.Timedelta(days=days), end).get(sym)
+    if not bars:
+        raise HTTPException(404, f"no recent bars for {sym}")
+    df = pd.DataFrame([{
+        "ts": b["t"], "open": b["o"], "high": b["h"], "low": b["l"],
+        "close": b["c"], "volume": b["v"],
+    } for b in bars])
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    df = df.set_index("ts")
+    ny = df.index.tz_convert(NY)
+    mins = ny.hour * 60 + ny.minute
+    df = df[(mins >= 570) & (mins < 960) & (ny.weekday < 5)]
+    if df.empty:
+        raise HTTPException(404, f"no session bars for {sym}")
+    out = resample_equity(df, tf)
+
+    def _f(v):
+        v = float(v)
+        return round(v, 6) if _m.isfinite(v) else None
+
+    return [{"time": int(ts.timestamp()), "open": _f(r["open"]),
+             "high": _f(r["high"]), "low": _f(r["low"]),
+             "close": _f(r["close"])}
+            for ts, r in zip(out.index, out.to_dict("records"))]
 
 
 READINESS_JSON = Path("data/meta/readiness.json")

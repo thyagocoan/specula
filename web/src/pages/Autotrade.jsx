@@ -1,6 +1,34 @@
 import { useEffect, useMemo, useState } from 'react'
+import CandleChart from '../components/CandleChart.jsx'
 import { Pf } from '../components/bits.jsx'
 import { num } from '../data.js'
+
+const TF_SEC = {
+  '1min': 60, '5min': 300, '15min': 900, '30min': 1800,
+  '1h': 3600, '2h': 7200, '4h': 14400, '1d': 86400,
+}
+const TV_INTERVAL = {
+  '1min': '1', '5min': '5', '15min': '15', '30min': '30',
+  '1h': '60', '2h': '120', '4h': '240', '1d': 'D',
+}
+
+// axis re-based to NY so the chart reads in market time
+const _tzCache = new Map()
+function nyShift(sec) {
+  const bucket = Math.floor(sec / 3600)
+  let off = _tzCache.get(bucket)
+  if (off === undefined) {
+    const p = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York', hourCycle: 'h23', year: 'numeric',
+      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    }).formatToParts(new Date(sec * 1000))
+      .reduce((o, x) => ((o[x.type] = x.value), o), {})
+    off = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute) / 1000
+      - sec
+    _tzCache.set(bucket, off)
+  }
+  return off
+}
 
 const Money = ({ v }) => v == null ? '—' : (
   <span className={v >= 0 ? 'pos' : 'neg'}>
@@ -92,11 +120,124 @@ function MarketClock() {
   )
 }
 
+// validate one paper trade on a chart: entry/exit/stop/target drawn as
+// price lines, markers at the exact fill moments, TradingView deep-link
+function PaperTradeChart({ trade, onClose }) {
+  const [candles, setCandles] = useState(null)
+  const [err, setErr] = useState(null)
+  const tf = trade.exec_tf || '30min'
+
+  useEffect(() => {
+    setCandles(null); setErr(null)
+    ;(async () => {
+      try {
+        const r = await fetch(
+          `/api/candles_recent/${trade.symbol}?tf=${tf}&days=5`)
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}))
+          throw new Error(d?.detail || `API error ${r.status}`)
+        }
+        setCandles(await r.json())
+      } catch (e) {
+        setErr(String(e.message || e))
+      }
+    })()
+  }, [trade.id])
+
+  const shifted = useMemo(() => candles?.map((c) => ({
+    ...c, time: c.time + nyShift(c.time),
+  })), [candles])
+
+  const markers = useMemo(() => {
+    const m = []
+    const long = trade.side === 'long'
+    const e = Math.floor(Date.parse(trade.entry_ts) / 1000)
+    m.push({
+      time: e + nyShift(e),
+      position: long ? 'belowBar' : 'aboveBar',
+      color: long ? '#1baf7a' : '#e34948',
+      shape: long ? 'arrowUp' : 'arrowDown',
+      text: long ? 'L' : 'S', size: 2,
+    })
+    if (trade.exit_ts) {
+      const x = Math.floor(Date.parse(trade.exit_ts) / 1000)
+      m.push({
+        time: x + nyShift(x),
+        position: long ? 'aboveBar' : 'belowBar',
+        color: (trade.pnl_pct ?? 0) >= 0 ? '#1baf7a' : '#e34948',
+        shape: 'circle',
+        text: `${trade.pnl_pct > 0 ? '+' : ''}${(trade.pnl_pct ?? 0).toFixed(2)}%`,
+        size: 2,
+      })
+    }
+    return m
+  }, [trade])
+
+  const priceLines = useMemo(() => {
+    const out = [{ price: trade.entry_price,
+      title: `entry ${num(trade.entry_price, 4)}`, color: '#e8b93c' }]
+    if (trade.exit_price != null) {
+      out.push({ price: trade.exit_price,
+        title: `exit ${num(trade.exit_price, 4)}`, color: '#e8b93c' })
+    }
+    if (trade.sl != null) {
+      out.push({ price: trade.sl, title: `stop ${num(trade.sl, 4)}`,
+        color: '#e34948' })
+    }
+    if (trade.tp != null) {
+      out.push({ price: trade.tp, title: `target ${num(trade.tp, 4)}`,
+        color: '#1baf7a' })
+    }
+    return out
+  }, [trade])
+
+  const range = useMemo(() => {
+    const pad = 30 * (TF_SEC[tf] || 1800)
+    const e = Math.floor(Date.parse(trade.entry_ts) / 1000)
+    const x = trade.exit_ts
+      ? Math.floor(Date.parse(trade.exit_ts) / 1000)
+      : Math.floor(Date.now() / 1000)
+    return { from: e + nyShift(e) - pad, to: x + nyShift(x) + pad }
+  }, [trade, tf])
+
+  const tvUrl = `https://www.tradingview.com/chart/?symbol=${
+    encodeURIComponent(trade.symbol)}&interval=${TV_INTERVAL[tf] || '30'}`
+
+  return (
+    <div className="card">
+      <h3>
+        {trade.symbol} {trade.side} — trade #{trade.id} on the chart{' '}
+        <span className="hint">({tf} candles · New York time)</span>
+        <span style={{ float: 'right' }}>
+          <a className="btn ghost" href={tvUrl} target="_blank"
+            rel="noreferrer"
+            title="opens TradingView on this symbol/timeframe — the level lines are drawn here (TradingView URLs can't carry drawings)">
+            Open in TradingView ↗
+          </a>{' '}
+          <button className="btn ghost" onClick={onClose}>close</button>
+        </span>
+      </h3>
+      <p className="hint" style={{ margin: '0 0 6px' }}>
+        {trade.setup} · gold = entry/exit fills · red = stop · green = fixed
+        target{trade.tp == null ? ' (this setup targets the moving midband — no fixed line)' : ''}
+        {' '}· cross-check the same levels on TradingView with the button
+      </p>
+      {err && <p className="neg">{err}</p>}
+      {!candles && !err && <p className="hint">loading recent bars…</p>}
+      {shifted && (
+        <CandleChart candles={shifted} markers={markers} range={range}
+          priceLines={priceLines} height={380} />
+      )}
+    </div>
+  )
+}
+
 // live paper-trading results: daily balance + full trade history
 function PaperHistory() {
   const [doc, setDoc] = useState(null)
   const [sym, setSym] = useState('all')
   const [setup, setSetup] = useState('all')
+  const [focus, setFocus] = useState(null) // trade shown on the chart
 
   useEffect(() => {
     let alive = true
@@ -192,7 +333,9 @@ function PaperHistory() {
                       ? Math.abs(100 * (t.last_price - t.sl) / t.last_price)
                       : null
                     return (
-                      <tr key={t.id}>
+                      <tr key={t.id} className="selectable"
+                        onClick={() => setFocus(
+                          focus?.id === t.id ? null : t)}>
                         <td className="txt">{fmtNY(t.entry_ts)}</td>
                         <td className="txt"><b>{t.symbol}</b></td>
                         <td className="txt hint" style={{
@@ -221,8 +364,14 @@ function PaperHistory() {
         )
       })()}
 
+      {focus && (
+        <PaperTradeChart trade={focus} onClose={() => setFocus(null)} />
+      )}
+
       <div className="card">
-        <h3>Trade history</h3>
+        <h3>Trade history{' '}
+          <span className="hint">(click a trade to see it on the chart with
+            entry, exit, stop and target)</span></h3>
         <div className="filters">
           <label>asset
             <select value={sym} onChange={(e) => setSym(e.target.value)}>
@@ -261,7 +410,10 @@ function PaperHistory() {
               </thead>
               <tbody>
                 {rows.slice(0, 300).map((t) => (
-                  <tr key={t.id}>
+                  <tr key={t.id} className="selectable"
+                    style={focus?.id === t.id
+                      ? { background: 'rgba(232,185,60,.14)' } : undefined}
+                    onClick={() => setFocus(focus?.id === t.id ? null : t)}>
                     <td className="txt">{fmtNY(t.entry_ts)}</td>
                     <td className="txt"><b>{t.symbol}</b></td>
                     <td className="txt hint" style={{
