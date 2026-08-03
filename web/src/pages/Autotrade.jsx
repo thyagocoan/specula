@@ -1,6 +1,155 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Pf } from '../components/bits.jsx'
 import { num } from '../data.js'
+
+const Money = ({ v }) => v == null ? '—' : (
+  <span className={v >= 0 ? 'pos' : 'neg'}>
+    {v < 0 ? '-' : ''}${Math.abs(v).toFixed(2)}
+  </span>
+)
+
+const fmtNY = (iso) => iso ? new Date(iso).toLocaleString('en-AU', {
+  timeZone: 'America/New_York', day: '2-digit', month: 'short',
+  hour: '2-digit', minute: '2-digit', hour12: false,
+}) : '—'
+
+// live paper-trading results: daily balance + full trade history
+function PaperHistory() {
+  const [doc, setDoc] = useState(null)
+  const [sym, setSym] = useState('all')
+  const [setup, setSetup] = useState('all')
+
+  useEffect(() => {
+    let alive = true
+    async function load() {
+      try {
+        const r = await fetch('/api/paper')
+        if (r.ok && alive) setDoc(await r.json())
+      } catch { /* offline */ }
+    }
+    load()
+    const t = setInterval(load, 30000) // live view during the session
+    return () => { alive = false; clearInterval(t) }
+  }, [])
+
+  const symbols = useMemo(
+    () => [...new Set((doc?.trades || []).map((t) => t.symbol))].sort(),
+    [doc])
+  const setups = useMemo(
+    () => [...new Set((doc?.trades || []).map((t) => t.setup))].sort(),
+    [doc])
+  const rows = useMemo(() => (doc?.trades || []).filter((t) =>
+    (sym === 'all' || t.symbol === sym)
+    && (setup === 'all' || t.setup === setup)), [doc, sym, setup])
+
+  if (!doc) return null
+  const s = doc.summary
+
+  return (
+    <>
+      <div className="card">
+        <h3>Paper trading — live results{' '}
+          <span className="hint">(refreshes every 30s · times are New
+            York)</span></h3>
+        <div className="tiles">
+          <div className="tile"><div className="k">Open positions</div>
+            <div className="v">{s.open}</div></div>
+          <div className="tile"><div className="k">Closed trades</div>
+            <div className="v">{s.closed}</div>
+            <div className="d">{s.wins} winners</div></div>
+          <div className="tile"><div className="k">Total P&L</div>
+            <div className="v"><Money v={s.total_pnl} /></div></div>
+          <div className="tile"><div className="k">Win rate</div>
+            <div className="v">{s.closed
+              ? `${(100 * s.wins / s.closed).toFixed(0)}%` : '—'}</div></div>
+        </div>
+        {s.days.length > 0 && (
+          <table className="grid" style={{ marginTop: 10 }}>
+            <thead>
+              <tr><th className="txt">Session (NY)</th><th>Trades</th>
+                <th>Wins</th><th>Day P&L</th></tr>
+            </thead>
+            <tbody>
+              {s.days.map((d) => (
+                <tr key={d.date}>
+                  <td className="txt">{d.date}</td>
+                  <td>{d.trades}</td>
+                  <td>{d.wins}/{d.trades}</td>
+                  <td><Money v={d.pnl} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="card">
+        <h3>Trade history</h3>
+        <div className="filters">
+          <label>asset
+            <select value={sym} onChange={(e) => setSym(e.target.value)}>
+              <option value="all">All ({symbols.length})</option>
+              {symbols.map((x) => <option key={x}>{x}</option>)}
+            </select>
+          </label>
+          <label>setup
+            <select value={setup} onChange={(e) => setSetup(e.target.value)}>
+              <option value="all">All</option>
+              {setups.map((x) => <option key={x}>{x}</option>)}
+            </select>
+          </label>
+          <span className="hint">{rows.length} trades</span>
+        </div>
+        {rows.length === 0 ? (
+          <p className="hint">no paper trades yet — they appear here the
+            moment the scanner opens one</p>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className="grid">
+              <thead>
+                <tr>
+                  <th className="txt">Entry (NY)</th>
+                  <th className="txt">Symbol</th>
+                  <th className="txt">Setup</th>
+                  <th className="txt">Side</th>
+                  <th>Entry px</th>
+                  <th className="txt">Exit (NY)</th>
+                  <th>Exit px</th>
+                  <th className="txt">Reason</th>
+                  <th>P&L $</th>
+                  <th>P&L %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.slice(0, 300).map((t) => (
+                  <tr key={t.id}>
+                    <td className="txt">{fmtNY(t.entry_ts)}</td>
+                    <td className="txt"><b>{t.symbol}</b></td>
+                    <td className="txt hint" style={{
+                      maxWidth: 320, whiteSpace: 'normal',
+                    }}>{t.setup}</td>
+                    <td className="txt">{t.side}</td>
+                    <td>{num(t.entry_price, 4)}</td>
+                    <td className="txt">{t.status === 'open'
+                      ? <span className="badge running">open</span>
+                      : fmtNY(t.exit_ts)}</td>
+                    <td>{t.exit_price != null ? num(t.exit_price, 4) : '—'}</td>
+                    <td className="txt hint">{t.exit_reason ?? '—'}</td>
+                    <td><Money v={t.pnl_usd} /></td>
+                    <td>{t.pnl_pct != null
+                      ? <span className={t.pnl_pct >= 0 ? 'pos' : 'neg'}>
+                        {num(t.pnl_pct, 2)}%</span>
+                      : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
 
 function SettingsCard() {
   const [s, setS] = useState(null)
@@ -112,6 +261,8 @@ export default function Autotrade() {
           <span className={msg.ok ? 'pos' : 'neg'}>{msg.text}</span>
         </div>
       )}
+
+      <PaperHistory />
 
       <SettingsCard />
 

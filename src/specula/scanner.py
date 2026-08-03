@@ -359,11 +359,38 @@ def scan_once(send) -> None:
     _save_state(state)
 
 
+def eod_summary(send) -> None:
+    """Once per trading day after the NY close: the session's balance."""
+    ny = datetime.now(NY)
+    if ny.weekday() >= 5 or not (ny.hour > 16 or
+                                 (ny.hour == 16 and ny.minute >= 20)):
+        return
+    state = _load_state()
+    today = ny.strftime("%Y-%m-%d")
+    if state.get("eod_summary_date") == today:
+        return
+    day = paper.pnl_summary(days=1)
+    still_open = len(paper.open_positions())
+    if day["closed_trades"] == 0 and still_open == 0:
+        state["eod_summary_date"] = today
+        _save_state(state)
+        return
+    wr = day["win_rate_pct"]
+    send(f"[EOD {today}] closed {day['closed_trades']} paper trades"
+         + (f" (win rate {wr:.0f}%)" if wr is not None else "")
+         + f" -> {day['total_pnl_usd']:+.2f} USD on the session"
+         + (f" · {still_open} still open" if still_open else "")
+         + " · details: portal Autotrade page")
+    state["eod_summary_date"] = today
+    _save_state(state)
+
+
 def run_loop(send) -> None:
     print("[scanner] started", flush=True)
     while True:
         try:
             scan_once(send)
+            eod_summary(send)
         except Exception as e:
             print(f"[scanner] cycle error: {type(e).__name__}: {e}", flush=True)
         time.sleep(POLL_SECONDS)

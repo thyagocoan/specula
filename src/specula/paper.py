@@ -140,6 +140,28 @@ def pnl_summary(days: int = 1) -> dict:
     }
 
 
+def history(limit: int = 2000) -> list[dict]:
+    """All paper positions, open and closed, newest first."""
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT id, symbol, side, qty, entry_price, entry_ts, sl, tp, "
+            "status, exit_price, exit_ts, exit_reason, pnl_usd, pnl_pct, cfg "
+            "FROM paper_positions ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    finally:
+        con.close()
+    cols = ["id", "symbol", "side", "qty", "entry_price", "entry_ts", "sl",
+            "tp", "status", "exit_price", "exit_ts", "exit_reason",
+            "pnl_usd", "pnl_pct", "cfg"]
+    out = []
+    for r in rows:
+        d = dict(zip(cols, r))
+        d["cfg"] = json.loads(d["cfg"]) if d["cfg"] else None
+        out.append(d)
+    return out
+
+
 def risk_check() -> str | None:
     """Return a reason string if new entries must be blocked, else None."""
     if len(open_positions()) >= MAX_OPEN:

@@ -579,6 +579,51 @@ EXPLORER_STATE = Path("data/meta/explorer_state.json")
 SECTORS_JSON = Path("data/meta/sectors.json")
 
 
+@app.get("/api/paper")
+def get_paper():
+    """Paper-trading history + daily balance for the portal."""
+    from collections import defaultdict
+    from zoneinfo import ZoneInfo
+
+    from specula import paper
+    from specula.sweeps import cfg_label
+
+    trades = paper.history()
+    ny = ZoneInfo("America/New_York")
+    days: dict[str, dict] = defaultdict(
+        lambda: {"trades": 0, "wins": 0, "pnl": 0.0})
+    total = 0.0
+    wins = closed = 0
+    for t in trades:
+        t["setup"] = cfg_label(t["cfg"]) if t["cfg"] else "—"
+        del t["cfg"]
+        if t["status"] != "closed" or t["pnl_usd"] is None:
+            continue
+        closed += 1
+        total += t["pnl_usd"]
+        if t["pnl_usd"] > 0:
+            wins += 1
+        day = (datetime.fromisoformat(t["exit_ts"]).astimezone(ny)
+               .strftime("%Y-%m-%d"))
+        d = days[day]
+        d["trades"] += 1
+        d["pnl"] += t["pnl_usd"]
+        if t["pnl_usd"] > 0:
+            d["wins"] += 1
+    return {
+        "trades": trades,
+        "summary": {
+            "open": sum(1 for t in trades if t["status"] == "open"),
+            "closed": closed,
+            "wins": wins,
+            "total_pnl": round(total, 2),
+            "days": [{"date": k, **{kk: (round(vv, 2) if kk == "pnl" else vv)
+                                    for kk, vv in v.items()}}
+                     for k, v in sorted(days.items(), reverse=True)],
+        },
+    }
+
+
 READINESS_JSON = Path("data/meta/readiness.json")
 
 
