@@ -153,8 +153,15 @@ def refresh_stock_bars(symbols: list[str]) -> None:
 
 
 def stock_bars(symbol: str) -> pd.DataFrame | None:
+    """Regular-session bars only — the backtest never saw premarket or
+    after-hours prices, so the scanner must not act on them either."""
     df = _bars_cache.get(symbol)
-    return df if df is not None and len(df) else None
+    if df is None or not len(df):
+        return None
+    ny = df.index.tz_convert(NY)
+    mins = ny.hour * 60 + ny.minute
+    rth = df[(mins >= 570) & (mins < 960) & (ny.weekday < 5)]
+    return rth if len(rth) else None
 
 
 # ------------------------------------------------------------- cfg resolution
@@ -319,10 +326,12 @@ def scan_once(send) -> None:
                     f"fired_{sig_ts}"):
                 crossed = (price > trigger if side == "long" else price < trigger)
                 if crossed and is_equity(symbol):
-                    # no fresh entries near the close (mirror the backtest's
-                    # 15:45 cutoff; live stock data runs ~15 min delayed)
+                    # entries only during the regular session, and none near
+                    # the close (mirror the backtest's 15:45 cutoff; live
+                    # stock data runs ~15 min delayed)
                     ny = datetime.now(NY)
-                    if (ny.hour == 15 and ny.minute >= 30) or ny.hour >= 16:
+                    mins = ny.hour * 60 + ny.minute
+                    if ny.weekday() >= 5 or mins < 570 or mins >= 930:
                         crossed = False
                 if crossed:
                     sym_state[f"fired_{sig_ts}"] = True
