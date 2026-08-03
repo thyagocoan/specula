@@ -206,10 +206,28 @@ def event_entry_mask(symbol: str, exec_tf: str, flt: dict):
     return ok, ok.copy()
 
 
+def trend_all_entry_mask(symbol: str, exec_tf: str, flt: dict):
+    """Full-alignment trend gate: longs only when the prior day's close is
+    above ALL of daily SMA20/50/200 and EMA9/21; shorts only when below
+    ALL of them."""
+    from specula.backtest import frames
+
+    idx = frames(symbol, exec_tf).index
+    d = frames(symbol, "1d")["close"]
+    mas = ([d.rolling(w).mean() for w in (20, 50, 200)]
+           + [d.ewm(span=s, adjust=False).mean() for s in (9, 21)])
+    above = pd.concat([(d > m) for m in mas], axis=1).all(axis=1)
+    below = pd.concat([(d < m) for m in mas], axis=1).all(axis=1)
+    long_ok = mtf.map_to_exec(above.astype(float), "1d", idx) > 0.5
+    short_ok = mtf.map_to_exec(below.astype(float), "1d", idx) > 0.5
+    return long_ok.fillna(False), short_ok.fillna(False)
+
+
 def regime_entry_mask(symbol: str, exec_tf: str, flt: dict):
     kind = flt.get("ind")
     fn = {"gap": gap_entry_mask, "compression": compression_entry_mask,
-          "trend": trend_entry_mask, "session": session_entry_mask,
+          "trend": trend_entry_mask, "trend_all": trend_all_entry_mask,
+          "session": session_entry_mask,
           "vix": vix_entry_mask, "event": event_entry_mask}[kind]
     return fn(symbol, exec_tf, flt)
 

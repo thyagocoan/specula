@@ -215,6 +215,68 @@ def fffd_ff(setup_df: pd.DataFrame, exec_df: pd.DataFrame, symbol: str,
             None, pd.Series(sl, index=idx))
 
 
+# ------------------------------------------------------------------ wick_bb
+
+def wick_bb(setup_df: pd.DataFrame, exec_df: pd.DataFrame, symbol: str,
+            setup_tf: str, dev: float = 2.0, wick_k: float = 1.5,
+            confirm_bars: int = 6, window: int = 20):
+    """Double pin-bar rejection at the Bollinger band, confirmed by the
+    exec-TF SMA200 (the user's BMY 2026-08-03 pattern).
+
+    Long: two consecutive setup candles whose lows pierce the LOWER band
+    with a lower wick >= wick_k x body ("minimum too far from the body");
+    then, within confirm_bars exec bars of the second candle's close and in
+    the SAME session, the first exec close above the exec-TF SMA200 enters
+    long at that close. Structural stop = distance to the SMA200. Shorts
+    mirror at the upper band with close below the SMA200.
+    """
+    o, h, l, c = (setup_df[k] for k in ("open", "high", "low", "close"))
+    lower, mid, upper = bollinger(c, window, dev)
+    body = (c - o).abs().clip(lower=c * 1e-4)
+    wick_lo = np.minimum(o, c) - l
+    wick_hi = h - np.maximum(o, c)
+    pin_lo = (l <= lower) & (wick_lo >= wick_k * body)
+    pin_hi = (h >= upper) & (wick_hi >= wick_k * body)
+    two_lo = (pin_lo & pin_lo.shift(1)).fillna(False)
+    two_hi = (pin_hi & pin_hi.shift(1)).fillna(False)
+
+    idx = exec_df.index
+    n = len(idx)
+    ex_close = exec_df["close"].to_numpy()
+    sma200 = exec_df["close"].rolling(200).mean().to_numpy()
+    day = pd.factorize(_day_key(idx, symbol))[0]
+
+    long_e = np.zeros(n, bool)
+    short_e = np.zeros(n, bool)
+    sl = np.full(n, np.nan)
+
+    def scan2(mask, is_long):
+        ts = setup_df.index[mask]
+        acts = mtf.activation_positions(pd.DatetimeIndex(ts), setup_tf, idx)
+        for a in acts:
+            if a >= n:
+                continue
+            for i in range(a, min(a + confirm_bars, n)):
+                if day[i] != day[a]:
+                    break  # confirmation must stay in the same session
+                s2 = sma200[i]
+                if np.isnan(s2):
+                    break
+                if is_long and ex_close[i] > s2:
+                    long_e[i] = True
+                    sl[i] = max((ex_close[i] - s2) / ex_close[i], 0.001)
+                    break
+                if not is_long and ex_close[i] < s2:
+                    short_e[i] = True
+                    sl[i] = max((s2 - ex_close[i]) / ex_close[i], 0.001)
+                    break
+
+    scan2(two_lo.to_numpy(), True)
+    scan2(two_hi.to_numpy(), False)
+    return (pd.Series(long_e, index=idx), pd.Series(short_e, index=idx),
+            None, pd.Series(sl, index=idx))
+
+
 # ------------------------------------------------------- explorer families
 
 def donchian(setup_df: pd.DataFrame, exec_index: pd.DatetimeIndex,
@@ -345,6 +407,10 @@ def generate(entry: dict, symbol: str, setup_tf: str, exec_tf: str):
         return fffd_ff(setup_df, exec_df, symbol, setup_tf,
                        entry.get("dev", 2.0), entry.get("wait_bars", 3),
                        entry.get("vol_mult", 0.0), entry.get("tol", 0.0))
+    if kind == "wick_bb":
+        return wick_bb(setup_df, exec_df, symbol, setup_tf,
+                       entry.get("dev", 2.0), entry.get("wick_k", 1.5),
+                       entry.get("confirm_bars", 6))
     if kind == "didi":
         return didi(setup_df, exec_df, setup_tf,
                     entry.get("tol_bars", 1), entry.get("adx_filter", False))

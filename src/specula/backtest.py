@@ -76,9 +76,18 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
             _signal_cache, sig_key,
             lambda: mtf.fffd_setup_signals(setup_df, dev=cfg["dev"], strict=cfg["strict"]),
         )
+        intraday = bool(cfg.get("intraday_only"))
+        if intraday:
+            # the whole operation lives in ONE session: the fechou-fora and
+            # fechou-dentro candles share a day, and the armed trigger dies
+            # at that day's close instead of carrying to the next open
+            sig = mtf.filter_same_session(sig, setup_df, cfg["setup_tf"],
+                                          cfg["symbol"])
         long_e, short_e, entry_price, sl_pct = _cached(
-            _breakout_cache, sig_key + (cfg["exec_tf"],),
-            lambda: mtf.run_breakout(sig, cfg["setup_tf"], exec_df),
+            _breakout_cache, sig_key + (cfg["exec_tf"], intraday),
+            lambda: mtf.run_breakout(sig, cfg["setup_tf"], exec_df,
+                                     same_session=intraday,
+                                     symbol=cfg["symbol"]),
         )
         sl_arr = pd.Series(sl_pct, index=exec_df.index)
         tp_arr = pd.Series(np.nan, index=exec_df.index)
@@ -168,12 +177,13 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
         short_exits = pd.Series(False, index=exec_df.index)
         exit_spec = cfg["exit"]
         sl_stop = exit_spec.get("sl", np.nan)
+        if sl_stop == "structural":
+            # per-trade stop distance from the signal (entry→level), works
+            # for fixed_r and trailing exits alike
+            sl_stop = sl_hint if sl_hint is not None else np.nan
         tp_stop = exit_spec.get("tp", np.nan)
         if exit_spec["kind"] == "trail":
             sl_trail = True
-            if sl_stop == "structural":
-                # per-trade trailing distance from the signal (entry→level)
-                sl_stop = sl_hint if sl_hint is not None else np.nan
         elif exit_spec["kind"] == "time":
             # exit N exec bars after the entry signal (approximation: keyed to
             # the signal bar, exact when entries don't overlap within N bars)
@@ -193,8 +203,8 @@ def build_portfolio(cfg: dict) -> vbt.Portfolio:
             long_ok, short_ok = rsi_entry_mask(cfg["symbol"], cfg["exec_tf"], flt)
         elif flt.get("ind") == "level":
             long_ok, short_ok = level_entry_mask(cfg["symbol"], cfg["exec_tf"], flt)
-        elif flt.get("ind") in ("gap", "compression", "trend", "session",
-                                "vix", "event"):
+        elif flt.get("ind") in ("gap", "compression", "trend", "trend_all",
+                                "session", "vix", "event"):
             long_ok, short_ok = regime_entry_mask(cfg["symbol"], cfg["exec_tf"], flt)
         else:
             raise ValueError(f"unknown filter indicator {flt.get('ind')}")

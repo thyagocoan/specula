@@ -80,6 +80,8 @@ def cfg_label(cfg: dict, with_fee: bool = False) -> str:
             f"dev {cfg.get('dev')}",
             str(cfg.get("target")),
         ]
+        if cfg.get("intraday_only"):
+            bits.append("intraday")
     elif strategy == "lab":
         entry = cfg.get("entry", {})
         exit_spec = cfg.get("exit", {})

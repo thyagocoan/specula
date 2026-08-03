@@ -116,9 +116,31 @@ def didi_setup_signals(setup_df: pd.DataFrame, tol_bars: int, adx_filter: bool,
     return sig, alta, baixa  # unfiltered alta/baixa for opposite-signal exits
 
 
+def _session_days(index: pd.DatetimeIndex, symbol: str | None) -> np.ndarray:
+    from specula.data import is_equity
+
+    tz = "America/New_York" if symbol and is_equity(symbol) else "UTC"
+    return pd.factorize(index.tz_convert(tz).date)[0]
+
+
+def filter_same_session(sig: pd.DataFrame, setup_df: pd.DataFrame,
+                        setup_tf: str, symbol: str) -> pd.DataFrame:
+    """Keep only signals whose fechou-fora and fechou-dentro candles belong
+    to the same session day (intraday-only mode)."""
+    if sig.empty:
+        return sig
+    days = _session_days(setup_df.index, symbol)
+    pos = setup_df.index.get_indexer(pd.DatetimeIndex(sig["ts"]))
+    ok = (pos >= 1) & (days[pos] == days[np.maximum(pos - 1, 0)])
+    return sig[ok]
+
+
 def run_breakout(sig: pd.DataFrame, setup_tf: str, exec_df: pd.DataFrame,
-                 validity_bars: int = 2):
-    """Map setup signals onto exec bars and run the breakout machine."""
+                 validity_bars: int = 2, same_session: bool = False,
+                 symbol: str | None = None):
+    """Map setup signals onto exec bars and run the breakout machine.
+    same_session: the armed trigger must fire in the SAME session day the
+    signal candle closed in — no overnight carry."""
     n = len(exec_df)
     if sig.empty:
         return (np.zeros(n, bool), np.zeros(n, bool),
@@ -128,6 +150,16 @@ def run_breakout(sig: pd.DataFrame, setup_tf: str, exec_df: pd.DataFrame,
     expiry_ts = ts + (validity_bars + 1) * tf_delta(setup_tf)
     exp = exec_df.index.searchsorted(expiry_ts) - 1
     keep = act < n
+    if same_session:
+        days = _session_days(exec_df.index, symbol)
+        # session of the signal candle = session of the first exec bar
+        # inside it; activation must land in that same session
+        act_c = np.clip(act, 0, n - 1)
+        sig_c = np.clip(exec_df.index.searchsorted(ts), 0, n - 1)
+        keep &= days[act_c] == days[sig_c]
+        # cap the trigger's life at the session's last exec bar
+        last_of_day = pd.Series(np.arange(n)).groupby(days).transform("max")
+        exp = np.minimum(exp, last_of_day.to_numpy()[act_c])
     return breakout_machine(
         n,
         act[keep].astype(np.int64),
