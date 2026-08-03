@@ -17,6 +17,11 @@ services:
     env_file: .env
     environment:
       - SPECULA_API=http://specula:8756
+      # paper-validation guards sized for the 250-symbol roster: at $1000 a
+      # trade this is $30k nominal paper exposure; on breach the scanner
+      # pauses itself and alerts (resume with /resume on Telegram)
+      - SPECULA_MAX_OPEN_POSITIONS=30
+      - SPECULA_DAILY_LOSS_CAP_USD=1500
     volumes:
       - ./data:/app/data
     depends_on:
