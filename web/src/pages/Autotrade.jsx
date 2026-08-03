@@ -354,6 +354,7 @@ export default function Autotrade() {
   const [symbol, setSymbol] = useState('')
   const [size, setSize] = useState(1000)
   const [msg, setMsg] = useState(null)
+  const [tab, setTab] = useState('trading')
 
   async function load() {
     try {
@@ -402,10 +403,22 @@ export default function Autotrade() {
         </div>
       )}
 
+      <div className="controls">
+        <div className="tabs">
+          {[['trading', 'Paper trading'], ['config', 'Configuration']].map(([id, label]) => (
+            <button key={id} className={tab === id ? 'active' : ''}
+              onClick={() => setTab(id)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <MarketClock />
 
-      <PaperHistory />
+      {tab === 'trading' && <PaperHistory />}
 
+      {tab === 'config' && <>
       <SettingsCard />
 
       <div className="card">
@@ -462,6 +475,7 @@ export default function Autotrade() {
           </table>
         )}
       </div>
+      </>}
     </div>
   )
 }
