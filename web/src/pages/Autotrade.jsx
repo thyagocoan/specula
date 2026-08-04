@@ -445,12 +445,17 @@ function PaperHistory() {
                   <th className="txt">Exit (NY)</th>
                   <th>Exit px</th>
                   <th className="txt">Reason</th>
+                  <th className="txt">Status</th>
                   <th>P&L $</th>
                   <th>P&L %</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.slice(0, 300).map((t) => (
+                {rows.slice(0, 300).map((t) => {
+                  const isOpen = t.status === 'open'
+                  const pnlUsd = isOpen ? t.unreal_usd : t.pnl_usd
+                  const pnlPct = isOpen ? t.unreal_pct : t.pnl_pct
+                  return (
                   <tr key={t.id} className="selectable"
                     style={focus?.id === t.id
                       ? { background: 'rgba(232,185,60,.14)' } : undefined}
@@ -463,18 +468,28 @@ function PaperHistory() {
                     <td className="txt">{t.side}</td>
                     <td>{num(t.qty * t.entry_price, 0)}</td>
                     <td>{num(t.entry_price, 4)}</td>
-                    <td className="txt">{t.status === 'open'
-                      ? <span className="badge running">open</span>
-                      : fmtNY(t.exit_ts)}</td>
-                    <td>{t.exit_price != null ? num(t.exit_price, 4) : '—'}</td>
+                    <td className="txt">{isOpen ? '—' : fmtNY(t.exit_ts)}</td>
+                    <td>{t.exit_price != null ? num(t.exit_price, 4)
+                      : isOpen && t.last_price
+                        ? <span className="hint" title="last seen price (live)">
+                          {num(t.last_price, 4)}</span> : '—'}</td>
                     <td className="txt hint">{t.exit_reason ?? '—'}</td>
-                    <td><Money v={t.pnl_usd} /></td>
-                    <td>{t.pnl_pct != null
-                      ? <span className={t.pnl_pct >= 0 ? 'pos' : 'neg'}>
-                        {num(t.pnl_pct, 2)}%</span>
+                    <td className="txt">{isOpen
+                      ? <span className="badge running">open</span>
+                      : <span className="badge done">closed</span>}</td>
+                    <td>
+                      <Money v={pnlUsd} />
+                      {isOpen && pnlUsd != null && (
+                        <span className="hint" title="unrealized — updates live"> ⚡</span>
+                      )}
+                    </td>
+                    <td>{pnlPct != null
+                      ? <span className={pnlPct >= 0 ? 'pos' : 'neg'}>
+                        {num(pnlPct, 2)}%</span>
                       : '—'}</td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
