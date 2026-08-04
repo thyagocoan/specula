@@ -117,15 +117,18 @@ def compression_entry_mask(symbol: str, exec_tf: str, flt: dict):
 
 
 def trend_entry_mask(symbol: str, exec_tf: str, flt: dict):
-    """Align with the daily trend: longs only above the daily SMA(ma),
-    shorts only below — using the prior completed day's value."""
+    """Align with the trend of ANY timeframe: longs only above the MA,
+    shorts only below — using the last completed bar's value.
+    {"ind": "trend", "ma": 50, "tf": "4h", "kind": "sma"|"ema"}"""
     from specula.backtest import frames
 
-    ex = frames(symbol, exec_tf)
-    idx = ex.index
-    d = frames(symbol, "1d")["close"]
-    sma = d.rolling(flt.get("ma", 20)).mean()
-    above = mtf.map_to_exec(((d > sma).astype(float)), "1d", idx)
+    idx = frames(symbol, exec_tf).index
+    tf = flt.get("tf", "1d")
+    s = frames(symbol, tf)["close"]
+    w = flt.get("ma", 20)
+    ma = (s.ewm(span=w, adjust=False).mean() if flt.get("kind") == "ema"
+          else s.rolling(w).mean())
+    above = mtf.map_to_exec(((s > ma).astype(float)), tf, idx)
     return (above > 0.5).fillna(False), (above < 0.5).fillna(False)
 
 
